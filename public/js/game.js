@@ -64,7 +64,7 @@ class DogfightGame {
 
     // Combat & Timing
     this.lastFireTime = 0;
-    this.fireRateMs = 110; // Rapid twin cannon fire
+    this.fireRateMs = 80; // Rapid high-cyclic twin cannon fire
     this.targetWasLocked = false;
     this.flightDistance = 0;
 
@@ -498,75 +498,95 @@ class DogfightGame {
     this.lastFireTime = now;
 
     this.audio.playCannonFire();
-    this.renderer.triggerShake(50, 2.5);
+    this.renderer.triggerShake(45, 2.0);
     this.network.sendFire();
-
-    // 3D Aircraft Orientation Vectors for Gun Boresight
-    const hRad = (this.player.heading * Math.PI) / 180;
-    const pRad = ((this.player.pitch || 0) * Math.PI) / 180;
-    const rRad = ((this.player.roll || 0) * Math.PI) / 180;
-
-    const sinH = Math.sin(hRad), cosH = Math.cos(hRad);
-    const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
-    const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
-
-    const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
-    const Rx = cosH * cosR + sinH * sinP * sinR;
-    const Ry = -sinH * cosR + cosH * sinP * sinR;
-    const Rz = -cosP * sinR;
-    const Ux = -cosH * sinR + sinH * sinP * cosR;
-    const Uy = sinH * sinR + cosH * sinP * cosR;
-    const Uz = cosP * cosR;
 
     let hitTarget = null;
     let hitScreenX = 480;
     let hitScreenY = 270;
-    let bestAimDist = Infinity;
 
-    const otherList = Object.values(this.otherPlayers);
-    for (let p of otherList) {
-      if (p.isDead || p.hasSpawnProtection) continue;
+    // Case 1: Locked target engagement (target within <= 480m) - Guaranteed Auto-Aim Hit!
+    if (
+      this.lockedTarget &&
+      !this.lockedTarget.isDead &&
+      !this.lockedTarget.hasSpawnProtection &&
+      this.lockedTarget.dist <= 480
+    ) {
+      hitTarget = this.lockedTarget;
+      hitScreenX = this.lockedTarget.screenX !== undefined ? this.lockedTarget.screenX : 480;
+      hitScreenY = this.lockedTarget.screenY !== undefined ? this.lockedTarget.screenY : 270;
+    } else {
+      // Case 2: Manual boresight aiming (< 500m) with Generous Bullet Magnetism & Lead Assist
+      const hRad = (this.player.heading * Math.PI) / 180;
+      const pRad = ((this.player.pitch || 0) * Math.PI) / 180;
+      const rRad = ((this.player.roll || 0) * Math.PI) / 180;
 
-      const dx = p.x - this.player.x;
-      const dy = p.y - this.player.y;
-      const dz = (p.alt - this.player.alt) * 8.0;
-      const dist = Math.hypot(dx, dy);
+      const sinH = Math.sin(hRad), cosH = Math.cos(hRad);
+      const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
+      const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
 
-      // Gun effective range is strictly < 500 meters
-      if (dist >= 500) continue;
+      const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
+      const Rx = cosH * cosR + sinH * sinP * sinR;
+      const Ry = -sinH * cosR + cosH * sinP * sinR;
+      const Rz = -cosP * sinR;
+      const Ux = -cosH * sinR + sinH * sinP * cosR;
+      const Uy = sinH * sinR + cosH * sinP * cosR;
+      const Uz = cosP * cosR;
 
-      // Project into aircraft body coordinates
-      const relZ = dx * Fx + dy * Fy + dz * Fz;
-      if (relZ <= 10) continue; // Behind or too close
+      let bestScore = Infinity;
+      const otherList = Object.values(this.otherPlayers);
 
-      const relX = dx * Rx + dy * Ry + dz * Rz;
-      const relY = dx * Ux + dy * Uy + dz * Uz;
+      for (let p of otherList) {
+        if (p.isDead || p.hasSpawnProtection) continue;
 
-      // Perspective projection
-      const k = 620 / Math.max(20, relZ);
-      const sx = 480 + relX * k;
-      const sy = 270 - relY * k;
+        const dx = p.x - this.player.x;
+        const dy = p.y - this.player.y;
+        const dz = (p.alt - this.player.alt) * 8.0;
+        const dist = Math.hypot(dx, dy);
 
-      if (sx < -40 || sx > 1000 || sy < -40 || sy > 580) continue;
+        // Effective gun range is strictly < 500 meters
+        if (dist >= 500) continue;
 
-      const distToCrosshair = Math.hypot(480 - sx, 270 - sy);
-      // Gunsight alignment cone (~70px close up, ~40px at 480m)
-      const hitRadius = Math.max(38, 75 * (1 - dist / 550));
+        const relZ = dx * Fx + dy * Fy + dz * Fz;
+        if (relZ <= 10) continue; // Behind or too close
 
-      if (distToCrosshair <= hitRadius && distToCrosshair < bestAimDist) {
-        bestAimDist = distToCrosshair;
-        hitTarget = p;
-        hitScreenX = sx;
-        hitScreenY = sy;
+        const relX = dx * Rx + dy * Ry + dz * Rz;
+        const relY = dx * Ux + dy * Uy + dz * Uz;
+
+        const k = 620 / Math.max(20, relZ);
+        const sx = 480 + relX * k;
+        const sy = 270 - relY * k;
+
+        if (sx < -60 || sx > 1020 || sy < -60 || sy > 600) continue;
+
+        const distToCrosshair = Math.hypot(480 - sx, 270 - sy);
+
+        // Generous Hit Cone: 110px up to 180px for high hit forgiveness!
+        const hitRadius = Math.max(110, 180 * (1 - dist / 600));
+
+        // Also check if aiming near predictive lead point
+        let distToLead = Infinity;
+        if (this.leadPoint) {
+          distToLead = Math.hypot(this.leadPoint.x - 480, this.leadPoint.y - 270);
+        }
+
+        const isHit = distToCrosshair <= hitRadius || distToLead <= 110;
+        if (isHit && distToCrosshair < bestScore) {
+          bestScore = distToCrosshair;
+          hitTarget = p;
+          hitScreenX = sx;
+          hitScreenY = sy;
+        }
       }
     }
 
     if (hitTarget) {
       this.renderer.addTracer(hitScreenX, hitScreenY);
+      this.renderer.triggerHitMarker(160);
       this.audio.playHitTarget();
-      this.renderer.addExplosion(hitScreenX, hitScreenY, 0.7);
-      this.renderer.triggerFlash(90, 'rgba(255, 176, 46, 0.4)');
-      const dmg = this.player.hasDamageBoost ? 24 : 12;
+      this.renderer.addExplosion(hitScreenX, hitScreenY, 0.75);
+      this.renderer.triggerFlash(70, 'rgba(255, 176, 46, 0.35)');
+      const dmg = this.player.hasDamageBoost ? 36 : 18; // High lethal damage!
       this.network.sendHit(hitTarget.id, dmg);
     } else {
       const sprayX = 480 + (Math.random() - 0.5) * 16;
@@ -929,12 +949,61 @@ class DogfightGame {
         }
       }
 
-      // Target Locking is disabled: Dogfight relies strictly on manual gunsight aim!
-      this.lockedTarget = null;
-      this.leadPoint = null;
-      this.targetWasLocked = false;
+      // Target Lock-On Detection: Very accessible up to <= 450 meters with Sticky Lock!
+      let bestTarget = null;
+      let minCrosshairDist = 180; // Generous 180px acquisition zone
+
+      // 1. Sticky Lock: Retain currently locked target if still in front view and in combat range
+      if (
+        this.lockedTarget &&
+        !this.lockedTarget.isDead &&
+        !this.lockedTarget.hasSpawnProtection &&
+        this.lockedTarget.dist <= 480 &&
+        this.lockedTarget.inFront
+      ) {
+        const dCurrent = Math.hypot(480 - (this.lockedTarget.screenX || 480), 270 - (this.lockedTarget.screenY || 270));
+        if (dCurrent < 320) {
+          bestTarget = this.lockedTarget;
+        }
+      }
+
+      // 2. If no target retained, acquire closest target in front within 180px crosshair radius
+      if (!bestTarget) {
+        for (let p of otherList) {
+          p.isLocked = false;
+          if (!p.isDead && !p.hasSpawnProtection && p.inFront && p.dist <= 450) {
+            const dCenter = Math.hypot(480 - p.screenX, 270 - p.screenY);
+            if (dCenter < minCrosshairDist) {
+              minCrosshairDist = dCenter;
+              bestTarget = p;
+            }
+          }
+        }
+      }
+
       for (let p of otherList) {
-        p.isLocked = false;
+        p.isLocked = !!(bestTarget && p.id === bestTarget.id);
+      }
+
+      if (bestTarget) {
+        bestTarget.isLocked = true;
+        this.lockedTarget = bestTarget;
+        if (!this.targetWasLocked) {
+          this.audio.playLockOn();
+        }
+        this.targetWasLocked = true;
+
+        // Predictive lead aim indicator
+        const leadDist = Math.max(14, bestTarget.dist / 22);
+        const leadRad = ((bestTarget.heading - this.player.heading) * Math.PI) / 180;
+        this.leadPoint = {
+          x: bestTarget.screenX + Math.sin(leadRad) * leadDist,
+          y: bestTarget.screenY - Math.cos(leadRad) * leadDist,
+        };
+      } else {
+        this.lockedTarget = null;
+        this.leadPoint = null;
+        this.targetWasLocked = false;
       }
 
         // Combat Airspace Boundary Tracking (Arena Radius = 1200m)

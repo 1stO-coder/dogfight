@@ -540,7 +540,7 @@ class GameServer:
                 # 5. Hit Detection & Damage Validation
                 if msg_type == "hit":
                     target_id = data.get("targetId")
-                    raw_damage = int(data.get("damage", 12))
+                    raw_damage = int(data.get("damage", 18))
                     now = time.time()
                     # 2x damage if damage boost buff is active!
                     effective_damage = (raw_damage * 2) if (now < player.damage_boost_until) else raw_damage

@@ -56,6 +56,7 @@ class DogfightRenderer {
     this.shakeIntensity = 0;
     this.flashDuration = 0;
     this.flashColor = 'rgba(239, 68, 68, 0.4)';
+    this.hitMarkerTimer = 0; // Visual hit marker feedback
 
     // Pulse & Radar
     this.pulsePhase = 0;
@@ -89,6 +90,10 @@ class DogfightRenderer {
   triggerFlash(durationMs, color = 'rgba(239, 68, 68, 0.45)') {
     this.flashDuration = durationMs;
     this.flashColor = color;
+  }
+
+  triggerHitMarker(durationMs = 160) {
+    this.hitMarkerTimer = durationMs;
   }
 
   addTracer(targetX = 480, targetY = 270) {
@@ -150,6 +155,11 @@ class DogfightRenderer {
 
     ctx.save();
 
+    // 0.5. Hit Marker Timer
+    if (this.hitMarkerTimer > 0) {
+      this.hitMarkerTimer -= dt * 1000;
+    }
+
     // 1. Screen Shake
     if (this.shakeDuration > 0) {
       this.shakeDuration -= dt * 1000;
@@ -162,18 +172,22 @@ class DogfightRenderer {
     ctx.fillStyle = '#061320';
     ctx.fillRect(0, 0, this.width, this.height);
 
-    // 3. 3D Moving Horizon & Perspective Ground Grid
-    this.drawHorizon(ctx, state.pitch, state.roll, state.distance || 0, state.speed || 95, dt, state.myPlane, now);
+    // 3. 3D Moving Continuous Horizon (Full 360° Loop)
+    this.drawHorizon(ctx, state.pitch, state.roll);
 
-    // 4. 3D Atmospheric Speed Streamers
-    this.drawSpeedStreamers(ctx, state.pitch, state.roll, state.speed || 95, dt);
-
-    // 5. Static HUD Reference Grid
-    this.drawBackgroundGrid(ctx);
+    // 4. Fixed 3D World Terrain (Fixed World Ground Grid, Airbase Runway, 14 Mountains, Beacons)
+    if (state.myPlane) {
+      this.draw3DWorldTerrain(ctx, state.myPlane, state.pitch, state.roll, now);
+    }
 
     // 6. Multi-Aircraft 3D Rendering (all other pilots in the room)
     if (state.otherPlayers && state.otherPlayers.length > 0) {
       this.drawOtherAircraft(ctx, state.otherPlayers, state.myPlane, state.pitch, state.roll, now);
+    }
+
+    // 6.2. Off-Screen Tactical Target Indicators (Guides pilot towards bogeys outside FOV)
+    if (state.otherPlayers && state.otherPlayers.length > 0 && state.myPlane) {
+      this.drawOffScreenTargetIndicators(ctx, state.otherPlayers, state.myPlane);
     }
 
     // 6.5. 3D Collectible Items in Airspace (Medkit, Damage Boost, Shield)
@@ -230,60 +244,71 @@ class DogfightRenderer {
     ctx.restore();
   }
 
-  drawBackgroundGrid(ctx) {
-    ctx.save();
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.08)';
-    ctx.lineWidth = 1;
+  project3D(wx, wy, wz, myPlane, pitch, roll) {
+    if (!myPlane) return null;
+    const hRad = (myPlane.heading * Math.PI) / 180;
+    const pRad = (((pitch || 0) % 360) * Math.PI) / 180;
+    const rRad = ((roll || 0) * Math.PI) / 180;
 
-    for (let x = 0; x <= this.width; x += 80) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, this.height);
-      ctx.stroke();
-    }
-    for (let y = 0; y <= this.height; y += 60) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(this.width, y);
-      ctx.stroke();
-    }
-    ctx.restore();
+    const sinH = Math.sin(hRad), cosH = Math.cos(hRad);
+    const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
+    const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
+
+    const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
+    const Rx = cosH * cosR + sinH * sinP * sinR;
+    const Ry = -sinH * cosR + cosH * sinP * sinR;
+    const Rz = -cosP * sinR;
+    const Ux = -cosH * sinR + sinH * sinP * cosR;
+    const Uy = sinH * sinR + cosH * sinP * cosR;
+    const Uz = cosP * cosR;
+
+    const dx = wx - myPlane.x;
+    const dy = wy - myPlane.y;
+    const dz = (wz - myPlane.alt) * 8.0;
+
+    const relZ = dx * Fx + dy * Fy + dz * Fz;
+    if (relZ <= 8) return null; // Behind camera
+
+    const relX = dx * Rx + dy * Ry + dz * Rz;
+    const relY = dx * Ux + dy * Uy + dz * Uz;
+
+    const k = 620 / Math.max(16, relZ);
+    return {
+      x: 480 + relX * k,
+      y: 270 - relY * k,
+      z: relZ,
+      dist: Math.hypot(dx, dy)
+    };
   }
 
-  drawHorizon(ctx, pitch, roll, distance, speed, dt, myPlane, now) {
+  drawHorizon(ctx, pitch, roll) {
     ctx.save();
     const cx = this.width / 2;
     const cy = this.height / 2;
 
-    // Continuous pitch in [0, 360) for vertical aerobatic loops (ตีลังกา)
     const normPitch = (((pitch || 0) % 360) + 360) % 360;
+    const rollRad = ((roll || 0) * Math.PI) / 180;
+
     const isInverted = normPitch > 90 && normPitch < 270;
-
-    // Effective horizon elevation on screen (-90° to +90°)
-    let effectivePitchDeg;
+    let pitchOffset;
     if (normPitch <= 90) {
-      effectivePitchDeg = normPitch; // 0° to 90°
+      pitchOffset = normPitch * 5.0;
     } else if (normPitch <= 270) {
-      effectivePitchDeg = 180 - normPitch; // 90° down to -90° (inverted)
+      pitchOffset = (180 - normPitch) * 5.0;
     } else {
-      effectivePitchDeg = normPitch - 360; // -90° up to 0°
+      pitchOffset = (normPitch - 360) * 5.0;
     }
-
-    const pitchOffset = effectivePitchDeg * 5.0;
-    const rollRad = (roll * Math.PI) / 180;
 
     ctx.translate(cx, cy + pitchOffset);
     if (isInverted) {
-      // Inverted flight: Ground is ABOVE, Sky is BELOW!
       ctx.rotate(Math.PI - rollRad);
     } else {
-      // Normal upright flight: Sky is ABOVE, Ground is BELOW!
       ctx.rotate(-rollRad);
     }
 
-    const extent = 1800;
+    const extent = 2000;
 
-    // Sky
+    // Sky dome
     const skyGrad = ctx.createLinearGradient(0, -extent, 0, 0);
     skyGrad.addColorStop(0, '#071829');
     skyGrad.addColorStop(0.85, '#1e3a5f');
@@ -291,10 +316,10 @@ class DogfightRenderer {
     ctx.fillStyle = skyGrad;
     ctx.fillRect(-extent, -extent, extent * 2, extent);
 
-    // Ground
+    // Ground terrain dome
     const groundGrad = ctx.createLinearGradient(0, 0, 0, extent);
     groundGrad.addColorStop(0, '#102a1e');
-    groundGrad.addColorStop(0.2, '#0c2016');
+    groundGrad.addColorStop(0.25, '#0c2016');
     groundGrad.addColorStop(1, '#050f0a');
     ctx.fillStyle = groundGrad;
     ctx.fillRect(-extent, 0, extent * 2, extent);
@@ -308,71 +333,63 @@ class DogfightRenderer {
     ctx.moveTo(-extent, 0);
     ctx.lineTo(extent, 0);
     ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // Ground Perspective Grid Lines
-    ctx.strokeStyle = 'rgba(52, 211, 153, 0.22)';
-    ctx.lineWidth = 1.2;
-
-    const streamOffset = (distance * 0.6) % 90;
-    for (let d = 20; d < 600; d += 60) {
-      const lineY = Math.pow((d + streamOffset) / 600, 2) * 450;
-      if (lineY > 2 && lineY < extent) {
-        ctx.beginPath();
-        ctx.moveTo(-extent, lineY);
-        ctx.lineTo(extent, lineY);
-        ctx.stroke();
-      }
-    }
-
-    // Longitudinal vanishing lines
-    for (let angle = -70; angle <= 70; angle += 14) {
-      const rad = (angle * Math.PI) / 180;
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(Math.tan(rad) * extent, extent);
-      ctx.stroke();
-    }
-
-    // 3D Terrain Landmarks (Airbase, Mountains, Beacons, Boundaries)
-    if (myPlane) {
-      this.draw3DTerrain(ctx, myPlane, now || performance.now(), isInverted);
-    }
 
     ctx.restore();
   }
 
-  draw3DTerrain(ctx, myPlane, now, isInverted = false) {
+  draw3DWorldTerrain(ctx, myPlane, pitch, roll, now) {
     if (!myPlane) return;
-    const myHRad = (myPlane.heading * Math.PI) / 180;
-    const sinH = Math.sin(myHRad);
-    const cosH = Math.cos(myHRad);
-    const alt = myPlane.alt;
 
-    // Helper: Project world point (wx, wy, wz_elevation) into Horizon space
-    const project = (wx, wy, wz = 0) => {
-      const dx = wx - myPlane.x;
-      const dy = wy - myPlane.y;
-      const relZ = dx * sinH + dy * cosH; // Forward axis (+ = ahead)
-      const relX = dx * cosH - dy * sinH; // Right axis (+ = right)
-      if (relZ <= 15) return null; // Behind plane
+    // 1. Fixed 3D Ground Grid (Positioned at exact world coordinates)
+    ctx.save();
+    ctx.strokeStyle = 'rgba(52, 211, 153, 0.22)';
+    ctx.lineWidth = 1.2;
 
-      const k = 620 / Math.max(20, relZ);
-      const hx = (isInverted ? -1 : 1) * relX * k;
-      const hy = Math.max(-500, (alt - wz) * 8.0 * k); // Altitude relative drop
-      return { x: hx, y: hy, z: relZ };
-    };
+    const step = 150;
+    const span = 900;
+    const startX = Math.floor((myPlane.x - span) / step) * step;
+    const endX = Math.ceil((myPlane.x + span) / step) * step;
+    const startY = Math.floor((myPlane.y - span) / step) * step;
+    const endY = Math.ceil((myPlane.y + span) / step) * step;
 
-    // 1. Central Airbase Runway (wx: 0, wy: 0, length: 520, width: 60)
+    // Draw longitudinal grid lines (segmented for proper front clipping)
+    for (let gx = startX; gx <= endX; gx += step) {
+      for (let gy = startY; gy < endY; gy += 300) {
+        const p1 = this.project3D(gx, gy, 0, myPlane, pitch, roll);
+        const p2 = this.project3D(gx, gy + 300, 0, myPlane, pitch, roll);
+        if (p1 && p2 && p1.z < 1200 && p2.z < 1200) {
+          ctx.beginPath();
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw lateral grid lines (segmented for proper front clipping)
+    for (let gy = startY; gy <= endY; gy += step) {
+      for (let gx = startX; gx < endX; gx += 300) {
+        const p1 = this.project3D(gx, gy, 0, myPlane, pitch, roll);
+        const p2 = this.project3D(gx + 300, gy, 0, myPlane, pitch, roll);
+        if (p1 && p2 && p1.z < 1200 && p2.z < 1200) {
+          ctx.beginPath();
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+
+    // 2. Central Airbase Runway (wx: 0, wy: 0, length: 520, width: 64)
     const rwL = 260;
     const rwW = 32;
-    const pNW = project(-rwW, rwL, 0);
-    const pNE = project(rwW, rwL, 0);
-    const pSE = project(rwW, -rwL, 0);
-    const pSW = project(-rwW, -rwL, 0);
+    const pNW = this.project3D(-rwW, rwL, 0, myPlane, pitch, roll);
+    const pNE = this.project3D(rwW, rwL, 0, myPlane, pitch, roll);
+    const pSE = this.project3D(rwW, -rwL, 0, myPlane, pitch, roll);
+    const pSW = this.project3D(-rwW, -rwL, 0, myPlane, pitch, roll);
 
     if (pNW && pNE && pSE && pSW) {
-      // Dark asphalt tarmac
       ctx.fillStyle = '#1e293b';
       ctx.strokeStyle = '#475569';
       ctx.lineWidth = 1.5;
@@ -385,13 +402,13 @@ class DogfightRenderer {
       ctx.fill();
       ctx.stroke();
 
-      // White centerline stripes
+      // Centerline dashed stripes
       ctx.strokeStyle = '#f8fafc';
       ctx.lineWidth = 2.0;
       ctx.beginPath();
       for (let yOff = -220; yOff <= 220; yOff += 55) {
-        const p1 = project(0, yOff - 16, 0);
-        const p2 = project(0, yOff + 16, 0);
+        const p1 = this.project3D(0, yOff - 16, 0, myPlane, pitch, roll);
+        const p2 = this.project3D(0, yOff + 16, 0, myPlane, pitch, roll);
         if (p1 && p2) {
           ctx.moveTo(p1.x, p1.y);
           ctx.lineTo(p2.x, p2.y);
@@ -399,7 +416,7 @@ class DogfightRenderer {
       }
       ctx.stroke();
 
-      // Runway Lights: Green (North threshold), Red (South threshold), Amber (sides)
+      // Runway threshold lights
       const lights = [
         { wx: -rwW, wy: rwL, col: '#10b981' },
         { wx: rwW, wy: rwL, col: '#10b981' },
@@ -409,7 +426,7 @@ class DogfightRenderer {
         { wx: rwW, wy: 0, col: '#f59e0b' },
       ];
       for (let l of lights) {
-        const pl = project(l.wx, l.wy, 0);
+        const pl = this.project3D(l.wx, l.wy, 0, myPlane, pitch, roll);
         if (pl) {
           ctx.fillStyle = l.col;
           ctx.beginPath();
@@ -418,8 +435,8 @@ class DogfightRenderer {
         }
       }
 
-      // Airbase Label
-      const pCenter = project(0, 0, 0);
+      // Airbase label
+      const pCenter = this.project3D(0, 0, 0, myPlane, pitch, roll);
       if (pCenter && pCenter.z < 850) {
         ctx.fillStyle = '#38bdf8';
         ctx.font = 'bold 11px monospace';
@@ -428,9 +445,8 @@ class DogfightRenderer {
       }
     }
 
-    // 2. 3D Mountain Peaks (Sorted back-to-front)
+    // 3. 14 3D Dispersed Mountain Peaks (Sorted back-to-front)
     const mountains = [...window.DOGFIGHT_MOUNTAINS];
-
     mountains.sort((a, b) => {
       const da = Math.hypot(a.wx - myPlane.x, a.wy - myPlane.y);
       const db = Math.hypot(b.wx - myPlane.x, b.wy - myPlane.y);
@@ -438,13 +454,13 @@ class DogfightRenderer {
     });
 
     for (let m of mountains) {
-      const pPeak = project(m.wx, m.wy, m.h);
-      const pL = project(m.wx - m.r * 0.9, m.wy, 0);
-      const pR = project(m.wx + m.r * 0.9, m.wy, 0);
-      const pB = project(m.wx, m.wy - m.r * 0.5, 0);
+      const pPeak = this.project3D(m.wx, m.wy, m.h, myPlane, pitch, roll);
+      const pL = this.project3D(m.wx - m.r * 0.9, m.wy, 0, myPlane, pitch, roll);
+      const pR = this.project3D(m.wx + m.r * 0.9, m.wy, 0, myPlane, pitch, roll);
+      const pB = this.project3D(m.wx, m.wy - m.r * 0.5, 0, myPlane, pitch, roll);
 
       if (pPeak && pL && pR && pB) {
-        // Left shaded slope
+        // Shaded left slope
         ctx.fillStyle = m.col;
         ctx.beginPath();
         ctx.moveTo(pPeak.x, pPeak.y);
@@ -453,7 +469,7 @@ class DogfightRenderer {
         ctx.closePath();
         ctx.fill();
 
-        // Right illuminated slope
+        // Illuminated right slope
         ctx.fillStyle = '#475569';
         ctx.beginPath();
         ctx.moveTo(pPeak.x, pPeak.y);
@@ -472,9 +488,9 @@ class DogfightRenderer {
 
         // Snow Cap
         if (m.snow) {
-          const pSnow = project(m.wx, m.wy, m.h * 0.72);
-          const pSnowL = project(m.wx - m.r * 0.28, m.wy, m.h * 0.65);
-          const pSnowR = project(m.wx + m.r * 0.28, m.wy, m.h * 0.65);
+          const pSnow = this.project3D(m.wx, m.wy, m.h * 0.72, myPlane, pitch, roll);
+          const pSnowL = this.project3D(m.wx - m.r * 0.28, m.wy, m.h * 0.65, myPlane, pitch, roll);
+          const pSnowR = this.project3D(m.wx + m.r * 0.28, m.wy, m.h * 0.65, myPlane, pitch, roll);
           if (pSnow && pSnowL && pSnowR) {
             ctx.fillStyle = '#f8fafc';
             ctx.beginPath();
@@ -487,17 +503,17 @@ class DogfightRenderer {
           }
         }
 
-        // Peak elevation tag
+        // Peak name & elevation tag
         if (pPeak.z < 1200) {
           ctx.fillStyle = '#cbd5e1';
           ctx.font = 'bold 10px monospace';
           ctx.textAlign = 'center';
-          ctx.fillText(`▲ ${m.name}`, pPeak.x, pPeak.y - 8);
+          ctx.fillText(`▲ ${m.name} [${m.h}m]`, pPeak.x, pPeak.y - 8);
         }
       }
     }
 
-    // 3. 4 Sector Waypoint Beacons (Holographic Light Beams)
+    // 4. 4 Sector Waypoint Beacons (Holographic Laser Beams)
     const beacons = [
       { name: 'WP-ALPHA', wx: 620, wy: 620, col: '#38bdf8' },
       { name: 'WP-BRAVO', wx: 620, wy: -620, col: '#10b981' },
@@ -506,10 +522,9 @@ class DogfightRenderer {
     ];
 
     for (let b of beacons) {
-      const pBase = project(b.wx, b.wy, 0);
-      const pTop = project(b.wx, b.wy, 320); // 320m vertical laser beam
+      const pBase = this.project3D(b.wx, b.wy, 0, myPlane, pitch, roll);
+      const pTop = this.project3D(b.wx, b.wy, 320, myPlane, pitch, roll);
       if (pBase && pTop) {
-        // Vertical beam
         ctx.strokeStyle = b.col;
         ctx.lineWidth = 2.5;
         ctx.shadowColor = b.col;
@@ -520,14 +535,12 @@ class DogfightRenderer {
         ctx.stroke();
         ctx.shadowBlur = 0;
 
-        // Base emitter circle
         ctx.strokeStyle = b.col;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(pBase.x, pBase.y, Math.max(3, 420 / pBase.z), 0, Math.PI * 2);
         ctx.stroke();
 
-        // Distance & Waypoint tag
         const dist = Math.hypot(b.wx - myPlane.x, b.wy - myPlane.y);
         ctx.fillStyle = b.col;
         ctx.font = 'bold 10px monospace';
@@ -536,7 +549,7 @@ class DogfightRenderer {
       }
     }
 
-    // 4. Combat Airspace Boundary Pylons (Ring at R = 1200m)
+    // 5. Combat Airspace Boundary Pylons (Ring at R = 1200m)
     const curDist = Math.hypot(myPlane.x, myPlane.y);
     const nearBoundary = curDist > 850;
 
@@ -544,8 +557,8 @@ class DogfightRenderer {
       const a = (i / 16) * Math.PI * 2;
       const px = Math.cos(a) * 1200;
       const py = Math.sin(a) * 1200;
-      const pBase = project(px, py, 0);
-      const pTop = project(px, py, 260);
+      const pBase = this.project3D(px, py, 0, myPlane, pitch, roll);
+      const pTop = this.project3D(px, py, 260, myPlane, pitch, roll);
 
       if (pBase && pTop) {
         ctx.strokeStyle = nearBoundary ? '#ef4444' : 'rgba(239, 68, 68, 0.4)';
@@ -567,8 +580,8 @@ class DogfightRenderer {
       for (let i = 0; i < 16; i++) {
         const a1 = (i / 16) * Math.PI * 2;
         const a2 = ((i + 1) / 16) * Math.PI * 2;
-        const p1 = project(Math.cos(a1) * 1200, Math.sin(a1) * 1200, 0);
-        const p2 = project(Math.cos(a2) * 1200, Math.sin(a2) * 1200, 0);
+        const p1 = this.project3D(Math.cos(a1) * 1200, Math.sin(a1) * 1200, 0, myPlane, pitch, roll);
+        const p2 = this.project3D(Math.cos(a2) * 1200, Math.sin(a2) * 1200, 0, myPlane, pitch, roll);
         if (p1 && p2) {
           ctx.beginPath();
           ctx.moveTo(p1.x, p1.y);
@@ -576,6 +589,84 @@ class DogfightRenderer {
           ctx.stroke();
         }
       }
+    }
+  }
+
+  drawOffScreenTargetIndicators(ctx, otherPlayers, myPlane) {
+    if (!otherPlayers || !otherPlayers.length || !myPlane) return;
+
+    for (let p of otherPlayers) {
+      if (p.isDead) continue;
+
+      // Check if target is off-screen or behind camera
+      const isOffScreen = !p.inFront || (p.screenX < 35 || p.screenX > this.width - 35 || p.screenY < 35 || p.screenY > this.height - 35);
+      if (!isOffScreen) continue;
+
+      const dx = p.x - myPlane.x;
+      const dy = p.y - myPlane.y;
+      const dist = Math.round(p.dist || Math.hypot(dx, dy));
+
+      // Relative horizontal bearing
+      const myHRad = (myPlane.heading * Math.PI) / 180;
+      const targetBearing = Math.atan2(dx, dy);
+      let relH = targetBearing - myHRad;
+      while (relH > Math.PI) relH -= Math.PI * 2;
+      while (relH < -Math.PI) relH -= Math.PI * 2;
+
+      // Relative elevation
+      const dAlt = (p.alt || 50) - (myPlane.alt || 50);
+      const pitchRad = ((myPlane.pitch || 0) * Math.PI) / 180;
+
+      // Screen angle: 0 = right, PI/2 = down, PI = left, -PI/2 = up
+      const screenAngle = Math.atan2(
+        -(dAlt * 6.0 - Math.sin(pitchRad) * dist * 3.5),
+        Math.sin(relH) * 500
+      );
+
+      const cx = 480;
+      const cy = 270;
+      const marginX = 45;
+      const marginY = 45;
+      const maxW = (this.width / 2) - marginX;
+      const maxH = (this.height / 2) - marginY;
+
+      const cosA = Math.cos(screenAngle);
+      const sinA = Math.sin(screenAngle);
+      const scaleX = Math.abs(cosA) > 0.001 ? maxW / Math.abs(cosA) : 9999;
+      const scaleY = Math.abs(sinA) > 0.001 ? maxH / Math.abs(sinA) : 9999;
+      const scale = Math.min(scaleX, scaleY);
+
+      const edgeX = cx + cosA * scale;
+      const edgeY = cy + sinA * scale;
+
+      ctx.save();
+      ctx.translate(edgeX, edgeY);
+
+      const isLocked = p.isLocked;
+      const col = isLocked ? '#ef4444' : (p.color || '#38bdf8');
+
+      // Tactical glowing chevron pointer
+      ctx.rotate(screenAngle);
+      ctx.fillStyle = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.moveTo(12, 0);
+      ctx.lineTo(-7, -9);
+      ctx.lineTo(-2, 0);
+      ctx.lineTo(-7, 9);
+      ctx.closePath();
+      ctx.fill();
+
+      // Nametag & Distance label
+      ctx.rotate(-screenAngle);
+      ctx.fillStyle = col;
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center';
+      const labelY = (screenAngle > -Math.PI / 2 && screenAngle < Math.PI / 2) ? 18 : -14;
+      ctx.fillText(`${p.callsign} [${dist}m]`, 0, labelY);
+
+      ctx.restore();
     }
   }
 
@@ -652,6 +743,7 @@ class DogfightRenderer {
       const relY = dx * Ux + dy * Uy + dz * Uz; // Vertical (+ = up)
 
       const dist = Math.hypot(dx, dy);
+      p.dist = dist;
 
       // Only draw if in front of player (relZ > 10)
       if (relZ <= 10) {
@@ -855,14 +947,24 @@ class DogfightRenderer {
     const cy = 270;
     ctx.save();
 
+    // 0. Radar Acquisition Zone Ring (180px zone)
+    ctx.strokeStyle = isLocked ? 'rgba(239, 68, 68, 0.45)' : 'rgba(56, 189, 248, 0.25)';
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.arc(cx, cy, 180, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
     // 1. Center Boresight Crosshair (Dogfight Gunsight)
-    ctx.strokeStyle = '#38bdf8';
+    const isLocked = !!lockedTarget;
+    ctx.strokeStyle = isLocked ? '#ef4444' : '#38bdf8';
     ctx.lineWidth = 1.8;
     ctx.shadowColor = ctx.strokeStyle;
     ctx.shadowBlur = 6;
 
     // Center dot
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = isLocked ? '#ef4444' : '#ffffff';
     ctx.beginPath();
     ctx.arc(cx, cy, 3, 0, Math.PI * 2);
     ctx.fill();
@@ -880,11 +982,90 @@ class DogfightRenderer {
     ctx.moveTo(cx, cy + 28); ctx.lineTo(cx, cy + 36);
     ctx.stroke();
 
-    // Effective Gun Range Label (< 500m)
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.75)';
+    // 1.5. Dynamic Hit Marker (Red 'X' ticks when shot lands on enemy)
+    if (this.hitMarkerTimer > 0) {
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 2.6;
+      ctx.shadowColor = '#ef4444';
+      ctx.shadowBlur = 10;
+      const sz = 13;
+      ctx.beginPath();
+      ctx.moveTo(cx - sz, cy - sz); ctx.lineTo(cx - 5, cy - 5);
+      ctx.moveTo(cx + sz, cy - sz); ctx.lineTo(cx + 5, cy - 5);
+      ctx.moveTo(cx - sz, cy + sz); ctx.lineTo(cx - 5, cy + 5);
+      ctx.moveTo(cx + sz, cy + sz); ctx.lineTo(cx + 5, cy + 5);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    // 2. Lock-on Box & Indicator (Active when enemy is within <= 450m)
+    if (lockedTarget && lockedTarget.screenX !== undefined) {
+      const tx = lockedTarget.screenX;
+      const ty = lockedTarget.screenY;
+      const pulseSize = 36 + Math.sin(now * 0.02) * 4;
+
+      // Connecting lead vector line from boresight to target
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 2.2;
+      ctx.shadowColor = '#ef4444';
+      ctx.shadowBlur = 10;
+
+      // Lock corners [ ]
+      const cLen = 10;
+      ctx.beginPath();
+      // Top-Left
+      ctx.moveTo(tx - pulseSize, ty - pulseSize + cLen);
+      ctx.lineTo(tx - pulseSize, ty - pulseSize);
+      ctx.lineTo(tx - pulseSize + cLen, ty - pulseSize);
+      // Top-Right
+      ctx.moveTo(tx + pulseSize - cLen, ty - pulseSize);
+      ctx.lineTo(tx + pulseSize, ty - pulseSize);
+      ctx.lineTo(tx + pulseSize, ty - pulseSize + cLen);
+      // Bottom-Right
+      ctx.moveTo(tx + pulseSize, ty + pulseSize - cLen);
+      ctx.lineTo(tx + pulseSize, ty + pulseSize);
+      ctx.lineTo(tx + pulseSize - cLen, ty + pulseSize);
+      // Bottom-Left
+      ctx.moveTo(tx - pulseSize + cLen, ty + pulseSize);
+      ctx.lineTo(tx - pulseSize, ty + pulseSize);
+      ctx.lineTo(tx - pulseSize, ty + pulseSize - cLen);
+      ctx.stroke();
+
+      // LOCK Text with Target Distance and Auto-Aim Badge
+      ctx.fillStyle = '#ef4444';
+      ctx.font = 'bold 11px monospace';
+      ctx.textAlign = 'center';
+      const targetDistStr = lockedTarget.dist ? `${Math.round(lockedTarget.dist)}m` : 'LOCK';
+      ctx.fillText(`LOCKED • ${lockedTarget.callsign} [${targetDistStr}]`, tx, ty - pulseSize - 8);
+      ctx.font = 'bold 9px monospace';
+      ctx.fillText(`AUTO-AIM ENGAGED (100% HIT)`, tx, ty + pulseSize + 16);
+    }
+
+    // 3. Lead Reticle (predictive aim assist)
+    if (leadPoint) {
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(leadPoint.x, leadPoint.y, 8, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#10b981';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('LEAD', leadPoint.x, leadPoint.y + 18);
+    }
+
+    // Range Label: Lock at <= 450m, Guns hit < 500m
+    ctx.fillStyle = isLocked ? '#ef4444' : 'rgba(56, 189, 248, 0.75)';
     ctx.font = 'bold 9px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('GUNS <500M', cx, cy + 42);
+    ctx.fillText(isLocked ? 'TARGET ACQUIRED • AUTO-AIM ACTIVE (LOCK ≤450M)' : 'RADAR LOCK ≤450M • AUTO-LEAD READY', cx, cy + 42);
 
     // Pitch Attitude Readout (displays loop angle / inverted status)
     const normPitch = (((pitch || 0) % 360) + 360) % 360;
@@ -1142,6 +1323,25 @@ class DogfightRenderer {
         ctx.moveTo(pp.x, pp.y);
         ctx.lineTo(pp.x + Math.sin(pRelHeading) * 7, pp.y - Math.cos(pRelHeading) * 7);
         ctx.stroke();
+
+        // Pulsing lock ring for locked target
+        if (p.isLocked) {
+          ctx.strokeStyle = '#ef4444';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(pp.x, pp.y, 7 + Math.sin(now * 0.02) * 2, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // Enemy Altitude Readout Tag on Radar (ความสูงศัตรู)
+        const pAlt = Math.round(p.alt || 50);
+        const myAlt = Math.round(myPlane.alt || 50);
+        const dAlt = pAlt - myAlt;
+        const altArrow = dAlt > 2 ? '▲' : (dAlt < -2 ? '▼' : '=');
+        ctx.fillStyle = p.isLocked ? '#ef4444' : '#e0f2fe';
+        ctx.font = 'bold 8px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${pAlt}m ${altArrow}`, pp.x, pp.y - 7);
       }
     }
 
