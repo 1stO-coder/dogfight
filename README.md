@@ -3,6 +3,8 @@
 เกมดวลเครื่องบินรบ **Dogfight ออนไลน์กับเพื่อนได้สูงสุด 10 คน**
 เล่นออนไลน์ได้แม้เพื่อนจะ **ไม่ได้อยู่ด้วยกัน ไม่ได้ใช้อินเทอร์เน็ตบ้านเดียวกัน** เข้าเล่นได้จากทั่วโลก!
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/1stO-coder/dogfight)
+
 ---
 
 ## 🌐 วิธีเปิดเล่นกับเพื่อนที่ไม่ได้อยู่ด้วยกัน (Play with Friends Anywhere)
