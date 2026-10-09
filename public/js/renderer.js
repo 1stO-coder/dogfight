@@ -244,7 +244,7 @@ class DogfightRenderer {
     ctx.restore();
   }
 
-  project3D(wx, wy, wz, myPlane, pitch, roll) {
+  projectCameraSpace(wx, wy, wz, myPlane, pitch, roll) {
     if (!myPlane) return null;
     const hRad = (myPlane.heading * Math.PI) / 180;
     const pRad = (((pitch || 0) % 360) * Math.PI) / 180;
@@ -264,20 +264,49 @@ class DogfightRenderer {
 
     const dx = wx - myPlane.x;
     const dy = wy - myPlane.y;
-    const dz = (wz - myPlane.alt) * 8.0;
+    const dz = wz - (myPlane.alt || 50); // 1:1 metric scale for rigid, non-warping 3D space
 
     const relZ = dx * Fx + dy * Fy + dz * Fz;
-    if (relZ <= 8) return null; // Behind camera
-
     const relX = dx * Rx + dy * Ry + dz * Rz;
     const relY = dx * Ux + dy * Uy + dz * Uz;
 
-    const k = 620 / Math.max(16, relZ);
+    return { relX, relY, relZ, dx, dy, dz };
+  }
+
+  project3D(wx, wy, wz, myPlane, pitch, roll) {
+    const cam = this.projectCameraSpace(wx, wy, wz, myPlane, pitch, roll);
+    if (!cam || cam.relZ <= 8) return null; // Behind camera
+
+    const k = 620 / Math.max(16, cam.relZ);
     return {
-      x: 480 + relX * k,
-      y: 270 - relY * k,
-      z: relZ,
-      dist: Math.hypot(dx, dy)
+      x: 480 + cam.relX * k,
+      y: 270 - cam.relY * k,
+      z: cam.relZ,
+      dist: Math.hypot(cam.dx, cam.dy)
+    };
+  }
+
+  projectClippedEdge(peakCam, baseCam) {
+    if (!peakCam || peakCam.relZ <= 8 || !baseCam) return null;
+    if (baseCam.relZ > 8) {
+      const k = 620 / Math.max(16, baseCam.relZ);
+      return {
+        x: 480 + baseCam.relX * k,
+        y: 270 - baseCam.relY * k,
+        z: baseCam.relZ
+      };
+    }
+    // Base is behind near-plane (relZ <= 8): interpolate along peak->base edge to relZ = 8
+    const denom = peakCam.relZ - baseCam.relZ;
+    if (Math.abs(denom) < 0.001) return null;
+    const t = Math.max(0, Math.min(1, (8 - baseCam.relZ) / denom));
+    const clippedX = baseCam.relX + t * (peakCam.relX - baseCam.relX);
+    const clippedY = baseCam.relY + t * (peakCam.relY - baseCam.relY);
+    const k = 620 / 8;
+    return {
+      x: 480 + clippedX * k,
+      y: 270 - clippedY * k,
+      z: 8
     };
   }
 
@@ -454,49 +483,94 @@ class DogfightRenderer {
     });
 
     for (let m of mountains) {
-      const pPeak = this.project3D(m.wx, m.wy, m.h, myPlane, pitch, roll);
-      const pL = this.project3D(m.wx - m.r * 0.9, m.wy, 0, myPlane, pitch, roll);
-      const pR = this.project3D(m.wx + m.r * 0.9, m.wy, 0, myPlane, pitch, roll);
-      const pB = this.project3D(m.wx, m.wy - m.r * 0.5, 0, myPlane, pitch, roll);
+      const dx = m.wx - myPlane.x;
+      const dy = m.wy - myPlane.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 2) continue;
 
-      if (pPeak && pL && pR && pB) {
-        // Shaded left slope
-        ctx.fillStyle = m.col;
+      const peakCam = this.projectCameraSpace(m.wx, m.wy, m.h, myPlane, pitch, roll);
+      if (!peakCam || peakCam.relZ <= 8) continue; // Behind camera
+
+      const kPeak = 620 / Math.max(16, peakCam.relZ);
+      const pPeak = {
+        x: 480 + peakCam.relX * kPeak,
+        y: 270 - peakCam.relY * kPeak,
+        z: peakCam.relZ
+      };
+
+      // Viewing perpendicular tangent (always broad, never collapses into a 1D slit)
+      const ux = dx / dist;
+      const uy = dy / dist;
+      const perpX = -uy;
+      const perpY = ux;
+
+      const camL = this.projectCameraSpace(m.wx - perpX * m.r, m.wy - perpY * m.r, 0, myPlane, pitch, roll);
+      const camR = this.projectCameraSpace(m.wx + perpX * m.r, m.wy + perpY * m.r, 0, myPlane, pitch, roll);
+      const camF = this.projectCameraSpace(m.wx - ux * (m.r * 0.72), m.wy - uy * (m.r * 0.72), 0, myPlane, pitch, roll);
+
+      const pL = this.projectClippedEdge(peakCam, camL);
+      const pR = this.projectClippedEdge(peakCam, camR);
+      const pF = this.projectClippedEdge(peakCam, camF);
+
+      if (pL && pR && pF) {
+        // Shaded left slope (granite shadow facet)
+        ctx.fillStyle = m.col || '#334155';
         ctx.beginPath();
         ctx.moveTo(pPeak.x, pPeak.y);
         ctx.lineTo(pL.x, pL.y);
-        ctx.lineTo(pB.x, pB.y);
+        ctx.lineTo(pF.x, pF.y);
         ctx.closePath();
         ctx.fill();
 
-        // Illuminated right slope
+        // Illuminated right slope (sunlit rock facet)
         ctx.fillStyle = '#475569';
         ctx.beginPath();
         ctx.moveTo(pPeak.x, pPeak.y);
-        ctx.lineTo(pB.x, pB.y);
+        ctx.lineTo(pF.x, pF.y);
         ctx.lineTo(pR.x, pR.y);
         ctx.closePath();
         ctx.fill();
 
-        // Ridge lines
+        // Central structural ridge line
         ctx.strokeStyle = '#64748b';
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = 1.4;
         ctx.beginPath();
         ctx.moveTo(pPeak.x, pPeak.y);
-        ctx.lineTo(pB.x, pB.y);
+        ctx.lineTo(pF.x, pF.y);
+        ctx.stroke();
+
+        // Outer base contour lines
+        ctx.strokeStyle = '#1e293b';
+        ctx.lineWidth = 1.0;
+        ctx.beginPath();
+        ctx.moveTo(pL.x, pL.y);
+        ctx.lineTo(pF.x, pF.y);
+        ctx.lineTo(pR.x, pR.y);
         ctx.stroke();
 
         // Snow Cap
         if (m.snow) {
-          const pSnow = this.project3D(m.wx, m.wy, m.h * 0.72, myPlane, pitch, roll);
-          const pSnowL = this.project3D(m.wx - m.r * 0.28, m.wy, m.h * 0.65, myPlane, pitch, roll);
-          const pSnowR = this.project3D(m.wx + m.r * 0.28, m.wy, m.h * 0.65, myPlane, pitch, roll);
-          if (pSnow && pSnowL && pSnowR) {
-            ctx.fillStyle = '#f8fafc';
+          const snowCamL = this.projectCameraSpace(m.wx - perpX * (m.r * 0.3), m.wy - perpY * (m.r * 0.3), m.h * 0.68, myPlane, pitch, roll);
+          const snowCamR = this.projectCameraSpace(m.wx + perpX * (m.r * 0.3), m.wy + perpY * (m.r * 0.3), m.h * 0.68, myPlane, pitch, roll);
+          const snowCamF = this.projectCameraSpace(m.wx - ux * (m.r * 0.22), m.wy - uy * (m.r * 0.22), m.h * 0.64, myPlane, pitch, roll);
+
+          const pSnowL = this.projectClippedEdge(peakCam, snowCamL);
+          const pSnowR = this.projectClippedEdge(peakCam, snowCamR);
+          const pSnowF = this.projectClippedEdge(peakCam, snowCamF);
+
+          if (pSnowL && pSnowR && pSnowF) {
+            ctx.fillStyle = '#cbd5e1';
             ctx.beginPath();
             ctx.moveTo(pPeak.x, pPeak.y);
             ctx.lineTo(pSnowL.x, pSnowL.y);
-            ctx.lineTo(pSnow.x, pSnow.y + 4);
+            ctx.lineTo(pSnowF.x, pSnowF.y);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = '#f8fafc';
+            ctx.beginPath();
+            ctx.moveTo(pPeak.x, pPeak.y);
+            ctx.lineTo(pSnowF.x, pSnowF.y);
             ctx.lineTo(pSnowR.x, pSnowR.y);
             ctx.closePath();
             ctx.fill();
@@ -733,7 +807,7 @@ class DogfightRenderer {
       // Delta vector in world coords
       const dx = p.x - myPlane.x;
       const dy = p.y - myPlane.y;
-      const dz = (p.alt - myPlane.alt) * 8.0;
+      const dz = (p.alt || 50) - (myPlane.alt || 50); // 1:1 metric scale
 
       // 3D body reference frame
       const relZ = dx * Fx + dy * Fy + dz * Fz; // Forward (+ = ahead)
@@ -765,6 +839,25 @@ class DogfightRenderer {
         continue;
       }
 
+      // Relative flight heading and directional aspect
+      const eHRad = ((p.heading || 0) * Math.PI) / 180;
+      const eDirX = Math.sin(eHRad);
+      const eDirY = Math.cos(eHRad);
+
+      const toPlayerX = -dx / Math.max(1, dist);
+      const toPlayerY = -dy / Math.max(1, dist);
+
+      // Dot product: cos(angle)
+      // > 0.35: Flying toward player (Head-on)
+      // < -0.35: Flying away from player (Tail chase)
+      // Else: Crossing Left or Right
+      const aspectDot = eDirX * toPlayerX + eDirY * toPlayerY;
+      const aspectCross = eDirX * toPlayerY - eDirY * toPlayerX;
+
+      const isHeadOn = aspectDot > 0.35;
+      const isTailChase = aspectDot < -0.35;
+      const isCrossing = !isHeadOn && !isTailChase;
+
       ctx.save();
 
       // Case A: Distant target (dist > 450m) -> Tactical Diamond Bracket
@@ -785,11 +878,55 @@ class DogfightRenderer {
         ctx.closePath();
         ctx.stroke();
 
-        // Callsign & Range tag
+        // Direction chevron indicator inside diamond
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        if (isHeadOn) {
+          // Arrow pointing DOWN (towards player)
+          ctx.strokeStyle = '#ef4444';
+          ctx.moveTo(sx - 5, sy - 4);
+          ctx.lineTo(sx, sy + 3);
+          ctx.lineTo(sx + 5, sy - 4);
+        } else if (isTailChase) {
+          // Arrow pointing UP (away from player)
+          ctx.strokeStyle = '#10b981';
+          ctx.moveTo(sx - 5, sy + 4);
+          ctx.lineTo(sx, sy - 3);
+          ctx.lineTo(sx + 5, sy + 4);
+        } else if (aspectCross > 0) {
+          // Arrow pointing RIGHT
+          ctx.strokeStyle = '#f59e0b';
+          ctx.moveTo(sx - 4, sy - 5);
+          ctx.lineTo(sx + 3, sy);
+          ctx.lineTo(sx - 4, sy + 5);
+        } else {
+          // Arrow pointing LEFT
+          ctx.strokeStyle = '#f59e0b';
+          ctx.moveTo(sx + 4, sy - 5);
+          ctx.lineTo(sx - 3, sy);
+          ctx.lineTo(sx + 4, sy + 5);
+        }
+        ctx.stroke();
+
+        // Callsign & Aspect Badge
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 11px monospace';
         ctx.textAlign = 'center';
         ctx.fillText(`[LV.${p.level || 1}] ${p.callsign}`, sx, sy - 18);
+
+        // Aspect tag badge
+        let aspectTag = '▼ RETREATING';
+        let aspectColor = '#10b981';
+        if (isHeadOn) {
+          aspectTag = '▲ HEAD-ON';
+          aspectColor = '#ef4444';
+        } else if (isCrossing) {
+          aspectTag = aspectCross > 0 ? '► CROSSING R' : '◄ CROSSING L';
+          aspectColor = '#f59e0b';
+        }
+        ctx.fillStyle = aspectColor;
+        ctx.font = 'bold 9px monospace';
+        ctx.fillText(aspectTag, sx, sy - 6);
 
         ctx.fillStyle = inGunRange ? '#10b981' : '#64748b';
         ctx.font = '10px monospace';
@@ -804,13 +941,8 @@ class DogfightRenderer {
       ctx.translate(sx, sy);
       ctx.scale(scaleFactor, scaleFactor);
 
-      // Tilt according to remote plane's roll & pitch
       const remoteRollRad = ((p.roll || 0) * Math.PI) / 180;
-      ctx.rotate(remoteRollRad * 0.7);
-      if (p.pitch !== undefined) {
-        const pCos = Math.cos(((p.pitch || 0) * Math.PI) / 180);
-        ctx.scale(1.0, pCos < -0.1 ? -1.0 : 1.0);
-      }
+      const jetColor = p.color || '#38bdf8';
 
       // 1. Invulnerability / Armor Shield Bubble
       const hasAnyShield = p.hasSpawnProtection || (p.shieldHp && p.shieldHp > 0) || p.hasShield;
@@ -828,88 +960,232 @@ class DogfightRenderer {
         ctx.shadowBlur = 0;
       }
 
-      // 2. Afterburner Thruster Flame
-      const flameLen = 14 + Math.sin(now * 0.06) * 6;
-      ctx.fillStyle = '#f97316';
-      ctx.beginPath();
-      ctx.moveTo(-6, 20);
-      ctx.lineTo(0, 20 + flameLen);
-      ctx.lineTo(6, 20);
-      ctx.closePath();
-      ctx.fill();
+      let textUnrollAngle = 0;
 
-      // Twin burner cores
-      ctx.fillStyle = '#38bdf8';
-      ctx.beginPath();
-      ctx.arc(-4, 20, 2.5, 0, Math.PI * 2);
-      ctx.arc(4, 20, 2.5, 0, Math.PI * 2);
-      ctx.fill();
+      if (isHeadOn) {
+        // --- HEAD-ON ENCOUNTER (Facing towards player) ---
+        // Mirror roll because viewing front of aircraft
+        ctx.rotate(-remoteRollRad * 0.7);
+        textUnrollAngle = remoteRollRad * 0.7;
 
-      // 3. 3D Fighter Jet Silhouette
-      const jetColor = p.color || '#38bdf8';
-      ctx.fillStyle = '#0f172a';
-      ctx.strokeStyle = p.isLocked ? '#ef4444' : jetColor;
-      ctx.lineWidth = 2.2;
-      ctx.shadowColor = ctx.strokeStyle;
-      ctx.shadowBlur = 8;
+        // Front Fighter Jet Airframe
+        ctx.fillStyle = '#0f172a';
+        ctx.strokeStyle = p.isLocked ? '#ef4444' : jetColor;
+        ctx.lineWidth = 2.2;
+        ctx.shadowColor = ctx.strokeStyle;
+        ctx.shadowBlur = 8;
 
-      ctx.beginPath();
-      ctx.moveTo(0, -28);       // Nose
-      ctx.lineTo(10, -6);       // Fuselage right
-      ctx.lineTo(36, 10);       // Right wing tip
-      ctx.lineTo(32, 16);       // Wing trailing edge
-      ctx.lineTo(12, 12);       // Inboard wing
-      ctx.lineTo(14, 22);       // Right tail fin
-      ctx.lineTo(4, 20);        // Right engine nozzle
-      ctx.lineTo(0, 22);        // Center fuselage
-      ctx.lineTo(-4, 20);       // Left engine nozzle
-      ctx.lineTo(-14, 22);      // Left tail fin
-      ctx.lineTo(-12, 12);      // Inboard wing
-      ctx.lineTo(-32, 16);      // Wing trailing edge
-      ctx.lineTo(-36, 10);      // Left wing tip
-      ctx.lineTo(-10, -6);      // Fuselage left
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, 26);        // Pointed nose radome (facing viewer)
+        ctx.lineTo(8, 12);        // Nose right chine
+        ctx.lineTo(12, 4);         // Right engine intake outer
+        ctx.lineTo(38, -6);       // Right wing tip (swept back)
+        ctx.lineTo(34, -14);      // Right wing trailing edge
+        ctx.lineTo(12, -12);      // Right fuselage seam
+        ctx.lineTo(8, -22);       // Right tail base
+        ctx.lineTo(0, -20);       // Rear tail center
+        ctx.lineTo(-8, -22);      // Left tail base
+        ctx.lineTo(-12, -12);     // Left fuselage seam
+        ctx.lineTo(-34, -14);     // Left wing trailing edge
+        ctx.lineTo(-38, -6);      // Left wing tip (swept back)
+        ctx.lineTo(-12, 4);        // Left engine intake outer
+        ctx.lineTo(-8, 12);       // Nose left chine
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
 
-      // Cockpit canopy glass
-      ctx.fillStyle = 'rgba(56, 189, 248, 0.65)';
-      ctx.beginPath();
-      ctx.ellipse(0, -10, 4.5, 10, 0, 0, Math.PI * 2);
-      ctx.fill();
+        // Twin Engine Air Intakes (dark frontal openings)
+        ctx.fillStyle = '#020617';
+        ctx.fillRect(-11, 0, 4, 7);
+        ctx.fillRect(7, 0, 4, 7);
+
+        // Prominent Forward Cockpit Bubble Canopy (illuminated cyan)
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.85)';
+        ctx.shadowColor = '#38bdf8';
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.ellipse(0, 8, 5.5, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Pilot HUD glare line inside canopy
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(-2, 4);
+        ctx.lineTo(0, 12);
+        ctx.stroke();
+
+        // Pulsating Nose Radar / Combat Headlight
+        const strobePulse = 2.5 + Math.sin(now * 0.035) * 1.5;
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(0, 24, strobePulse, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Wingtip Navigation Strobes (Green Starboard, Red Port)
+        ctx.fillStyle = '#10b981'; // Green
+        ctx.beginPath();
+        ctx.arc(-38, -6, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#ef4444'; // Red
+        ctx.beginPath();
+        ctx.arc(38, -6, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+      } else if (isCrossing) {
+        // --- CROSSING ASPECT (Banking across screen) ---
+        const headingAngle = Math.atan2(aspectCross, -aspectDot);
+        ctx.rotate(headingAngle * 0.75);
+        textUnrollAngle = -headingAngle * 0.75;
+
+        // Afterburner thruster flame trailing behind
+        const flameLen = 12 + Math.sin(now * 0.06) * 5;
+        ctx.fillStyle = '#f97316';
+        ctx.beginPath();
+        ctx.moveTo(-5, 20);
+        ctx.lineTo(0, 20 + flameLen);
+        ctx.lineTo(5, 20);
+        ctx.closePath();
+        ctx.fill();
+
+        // Angled Fighter Airframe
+        ctx.fillStyle = '#0f172a';
+        ctx.strokeStyle = p.isLocked ? '#ef4444' : jetColor;
+        ctx.lineWidth = 2.2;
+        ctx.shadowColor = ctx.strokeStyle;
+        ctx.shadowBlur = 8;
+
+        ctx.beginPath();
+        ctx.moveTo(0, -28);
+        ctx.lineTo(9, -8);
+        ctx.lineTo(32, 8);
+        ctx.lineTo(28, 14);
+        ctx.lineTo(10, 10);
+        ctx.lineTo(12, 20);
+        ctx.lineTo(3, 19);
+        ctx.lineTo(0, 21);
+        ctx.lineTo(-3, 19);
+        ctx.lineTo(-12, 20);
+        ctx.lineTo(-10, 10);
+        ctx.lineTo(-28, 14);
+        ctx.lineTo(-32, 8);
+        ctx.lineTo(-9, -8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Angled cockpit canopy
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.7)';
+        ctx.beginPath();
+        ctx.ellipse(0, -8, 4, 9, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+      } else {
+        // --- TAIL CHASE (Facing away from player, thrusters visible) ---
+        ctx.rotate(remoteRollRad * 0.7);
+        textUnrollAngle = -remoteRollRad * 0.7;
+
+        // Roaring Twin Afterburner Thruster Flame
+        const flameLen = 14 + Math.sin(now * 0.06) * 6;
+        ctx.fillStyle = '#f97316';
+        ctx.beginPath();
+        ctx.moveTo(-6, 20);
+        ctx.lineTo(0, 20 + flameLen);
+        ctx.lineTo(6, 20);
+        ctx.closePath();
+        ctx.fill();
+
+        // Twin burner cores
+        ctx.fillStyle = '#38bdf8';
+        ctx.beginPath();
+        ctx.arc(-4, 20, 2.5, 0, Math.PI * 2);
+        ctx.arc(4, 20, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Rear Fighter Jet Silhouette
+        ctx.fillStyle = '#0f172a';
+        ctx.strokeStyle = p.isLocked ? '#ef4444' : jetColor;
+        ctx.lineWidth = 2.2;
+        ctx.shadowColor = ctx.strokeStyle;
+        ctx.shadowBlur = 8;
+
+        ctx.beginPath();
+        ctx.moveTo(0, -28);       // Nose (pointing away)
+        ctx.lineTo(10, -6);       // Fuselage right
+        ctx.lineTo(36, 10);       // Right wing tip
+        ctx.lineTo(32, 16);       // Wing trailing edge
+        ctx.lineTo(12, 12);       // Inboard wing
+        ctx.lineTo(14, 22);       // Right tail fin
+        ctx.lineTo(4, 20);        // Right engine nozzle
+        ctx.lineTo(0, 22);        // Center fuselage
+        ctx.lineTo(-4, 20);       // Left engine nozzle
+        ctx.lineTo(-14, 22);      // Left tail fin
+        ctx.lineTo(-12, 12);      // Inboard wing
+        ctx.lineTo(-32, 16);      // Wing trailing edge
+        ctx.lineTo(-36, 10);      // Left wing tip
+        ctx.lineTo(-10, -6);      // Fuselage left
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Rear Cockpit canopy glass
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.65)';
+        ctx.beginPath();
+        ctx.ellipse(0, -10, 4.5, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
       // Emit smoke trail if damaged (HP < 50)
       if (p.hp < 50 && Math.random() > 0.4) {
         this.addSmoke(sx, sy + 18, p.hp < 25 ? '#1e293b' : '#64748b');
       }
 
-      // Overhead Callsign & HP Bar (counter-rotate so text remains level)
-      ctx.rotate(-remoteRollRad * 0.7);
+      // Counter-rotate so text banners & HP bar remain level
+      ctx.rotate(textUnrollAngle);
 
       // Callsign with Level and Armor
       const armorBadge = (p.shieldHp && p.shieldHp > 0) ? ` 🛡️+${p.shieldHp}` : '';
       ctx.fillStyle = (p.level >= 4) ? '#f59e0b' : '#ffffff';
       ctx.font = 'bold 11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`[LV.${p.level || 1}] ${p.callsign}${armorBadge}`, 0, -38);
+      ctx.fillText(`[LV.${p.level || 1}] ${p.callsign}${armorBadge}`, 0, -42);
+
+      // Direction Aspect Badge
+      let aspectTag = '▼ TAIL CHASE';
+      let aspectColor = '#10b981';
+      if (isHeadOn) {
+        aspectTag = '▲ HEAD-ON';
+        aspectColor = '#ef4444';
+      } else if (isCrossing) {
+        aspectTag = aspectCross > 0 ? '► CROSSING R' : '◄ CROSSING L';
+        aspectColor = '#f59e0b';
+      }
+      ctx.fillStyle = aspectColor;
+      ctx.font = 'bold 9px monospace';
+      ctx.fillText(aspectTag, 0, -32);
 
       // Mini HP Bar
       const barW = 44;
       const barH = 5;
       const hpPct = Math.max(0, p.hp / (p.maxHp || 100));
       ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-      ctx.fillRect(-barW / 2, -34, barW, barH);
+      ctx.fillRect(-barW / 2, -26, barW, barH);
       ctx.fillStyle = hpPct > 0.5 ? '#10b981' : (hpPct > 0.25 ? '#f59e0b' : '#ef4444');
-      ctx.fillRect(-barW / 2, -34, barW * hpPct, barH);
+      ctx.fillRect(-barW / 2, -26, barW * hpPct, barH);
+
       // Temporary Armor Overlay Bar (+20 HP)
       if (p.shieldHp && p.shieldHp > 0) {
         const armorPct = Math.min(1.0, p.shieldHp / 20);
         ctx.fillStyle = '#38bdf8';
-        ctx.fillRect(-barW / 2, -37, barW * armorPct, 2.5);
+        ctx.fillRect(-barW / 2, -29, barW * armorPct, 2.5);
       }
       ctx.strokeStyle = '#38bdf8';
       ctx.lineWidth = 1;
-      ctx.strokeRect(-barW / 2, -34, barW, barH);
+      ctx.strokeRect(-barW / 2, -26, barW, barH);
 
       // Energy Shield Bubble (Spawn protection or active armor)
       if (hasAnyShield) {
@@ -934,7 +1210,7 @@ class DogfightRenderer {
       // Distance tag
       ctx.fillStyle = '#38bdf8';
       ctx.font = '10px monospace';
-      ctx.fillText(`${Math.round(dist)}m`, 0, 38);
+      ctx.fillText(`${Math.round(dist)}m`, 0, 42);
 
       ctx.restore();
     }
@@ -1515,7 +1791,7 @@ class DogfightRenderer {
     for (let it of items) {
       const dx = it.x - myPlane.x;
       const dy = it.y - myPlane.y;
-      const dz = (it.alt - myPlane.alt) * 8.0;
+      const dz = (it.alt || 50) - (myPlane.alt || 50); // 1:1 metric scale
 
       const relZ = dx * Fx + dy * Fy + dz * Fz;
       const relX = dx * Rx + dy * Ry + dz * Rz;

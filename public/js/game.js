@@ -541,7 +541,7 @@ class DogfightGame {
 
         const dx = p.x - this.player.x;
         const dy = p.y - this.player.y;
-        const dz = (p.alt - this.player.alt) * 8.0;
+        const dz = (p.alt || 50) - (this.player.alt || 50); // 1:1 metric scale matching renderer
         const dist = Math.hypot(dx, dy);
 
         // Effective gun range is strictly < 500 meters
