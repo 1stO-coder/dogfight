@@ -1,5 +1,13 @@
 /**
- * Flight Joystick & Gamepad Input Manager for Sky Ace: Dogfight Arena
+ * Universal Flight Joystick & Gamepad Input Manager for Sky Ace: Dogfight Arena
+ *
+ * Supports ALL Joystick & Gamepad Brands:
+ * - Logitech (Extreme 3D Pro, Attack 3, F310, F710)
+ * - Thrustmaster (T.Flight HOTAS X/One/4, T.16000M, TCA Airbus/Boeing, Warthog)
+ * - VKB, Virpil, WinWing
+ * - Xbox Series / One / 360 controllers
+ * - PlayStation DualSense / DualShock 4
+ * - Generic USB PC Flight Sticks / Gamepads / OEM flight yokes
  *
  * Adheres strictly to authentic aircraft flight controls:
  * - PULL STICK BACK / S = PITCH UP (Climb)
@@ -7,7 +15,7 @@
  * - STICK LEFT / A = BANK LEFT (Roll Left & Turn)
  * - STICK RIGHT / D = BANK RIGHT (Roll Right & Turn)
  * - THROTTLE: Up / Down arrow or Shift / Ctrl or Gamepad Slider
- * - FIRE: Trigger Button (0), RT (7), RB (5), Spacebar, Left Mouse Click
+ * - FIRE: Universal Trigger detection (Button 0, 1, 2, 5, 7, 8, 11, analog triggers, space, left click)
  */
 class DogfightJoystickManager {
   constructor() {
@@ -19,6 +27,9 @@ class DogfightJoystickManager {
 
     // Throttle state
     this.throttle = 1.0; // 0.65 (idle) to 1.45 (afterburner)
+
+    // Last pressed button for live testing feedback
+    this.lastPressedButton = null;
 
     // Keyboard states
     this.keys = {
@@ -74,10 +85,8 @@ class DogfightJoystickManager {
 
   onGamepadDisconnected(e) {
     console.log(`[Joystick] Disconnected: index ${e.gamepad.index}`);
-    if (this.gamepadIndex === e.gamepad.index) {
-      this.gamepadIndex = null;
-      this.connectedGamepad = null;
-    }
+    this.gamepadIndex = null;
+    this.connectedGamepad = null;
     if (this.callbacks.onConnectionChange) {
       this.callbacks.onConnectionChange(this.getDeviceInfo());
     }
@@ -124,10 +133,17 @@ class DogfightJoystickManager {
   }
 
   getDeviceInfo() {
-    if (this.gamepadIndex !== null) {
-      const gp = navigator.getGamepads ? navigator.getGamepads()[this.gamepadIndex] : null;
-      if (gp) {
-        return { connected: true, name: gp.id, axes: gp.axes.length, buttons: gp.buttons.length };
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < pads.length; i++) {
+      const gp = pads[i];
+      if (gp && gp.connected) {
+        return {
+          connected: true,
+          name: gp.id,
+          axes: gp.axes.length,
+          buttons: gp.buttons.length,
+          index: gp.index
+        };
       }
     }
     return { connected: false, name: 'Keyboard / Mouse Mode' };
@@ -139,35 +155,76 @@ class DogfightJoystickManager {
     let triggerPressed = false;
     let throttleDelta = 0;
 
-    // Check physical gamepad
-    if (this.gamepadIndex !== null) {
-      const gp = navigator.getGamepads ? navigator.getGamepads()[this.gamepadIndex] : null;
-      if (gp) {
-        // Y-axis: standard joystick down = positive -> pull back = Pitch Up
-        // Up = negative -> push forward = Pitch Down
-        const stickY = gp.axes.length > 1 ? gp.axes[1] : 0;
-        const stickX = gp.axes.length > 0 ? gp.axes[0] : 0;
+    // Scan all connected gamepads (supports any USB/Bluetooth device index)
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let activePad = null;
 
-        rawPitch = this.applyDeadzone(stickY); // Down = positive (climb)
-        rawRoll = this.applyDeadzone(stickX);  // Right = positive (bank right)
-
-        // Throttle axis (if present on axis 2 or axis 3 or triggers)
-        if (gp.axes.length > 2) {
-          const throttleAxis = gp.axes[2];
-          if (Math.abs(throttleAxis) > 0.1) {
-            throttleDelta = -throttleAxis;
-          }
-        }
-
-        // Fire triggers: Button 0 (Trigger), Button 7 (RT), Button 5 (RB)
-        const b0 = gp.buttons[0] && gp.buttons[0].pressed;
-        const b7 = gp.buttons[7] && gp.buttons[7].pressed;
-        const b5 = gp.buttons[5] && gp.buttons[5].pressed;
-        triggerPressed = b0 || b7 || b5;
+    for (let i = 0; i < pads.length; i++) {
+      const gp = pads[i];
+      if (gp && gp.connected) {
+        activePad = gp;
+        this.gamepadIndex = gp.index;
+        this.connectedGamepad = gp;
+        break;
       }
     }
 
-    // Keyboard controls
+    if (activePad) {
+      const gp = activePad;
+
+      // 1. Primary Flight Axes (Pitch & Roll)
+      // Standard: Axis 1 = Pitch (Y), Axis 0 = Roll (X)
+      const stickY = gp.axes.length > 1 ? gp.axes[1] : 0;
+      const stickX = gp.axes.length > 0 ? gp.axes[0] : 0;
+
+      // Y-axis down = positive -> pull back = Pitch Up (climb)
+      rawPitch = this.applyDeadzone(stickY);
+      rawRoll = this.applyDeadzone(stickX);
+
+      // 2. Throttle Axis (Check axis 2, 3, or slider axes)
+      if (gp.axes.length > 2) {
+        // Many HOTAS controllers use Axis 2 or Axis 3 for throttle slider
+        const thAxis = gp.axes[2];
+        if (Math.abs(thAxis) > 0.15) {
+          throttleDelta = -thAxis;
+        }
+      }
+
+      // 3. Universal Fire Trigger Detection for ALL Brands:
+      // Logitech Extreme 3D: Trigger is Button 0, Thumb is Button 1
+      // Thrustmaster HOTAS: Trigger is Button 0 or Button 1
+      // Xbox: A (0), B (1), RB (5), RT (7)
+      // PlayStation: Cross (0), Circle (1), R1 (5), R2 (7)
+      // Generic Chinese USB Flight Sticks: Trigger is often Button 1, 2, or 8!
+      const fireButtonIndices = [0, 1, 2, 3, 5, 7, 8, 11];
+
+      for (let idx of fireButtonIndices) {
+        if (idx < gp.buttons.length) {
+          const btn = gp.buttons[idx];
+          // Check both digital .pressed AND analog pressure .value > 0.25
+          if (btn && (btn.pressed || btn.value > 0.25)) {
+            triggerPressed = true;
+            this.lastPressedButton = `Button ${idx}`;
+            break;
+          }
+        }
+      }
+
+      // Also track any other button currently pressed for tester feedback
+      for (let bIdx = 0; bIdx < gp.buttons.length; bIdx++) {
+        const b = gp.buttons[bIdx];
+        if (b && (b.pressed || b.value > 0.25)) {
+          this.lastPressedButton = `Button ${bIdx}`;
+          // If any top face button is held on a flight stick, count as fire trigger
+          if (bIdx < 12) {
+            triggerPressed = true;
+          }
+          break;
+        }
+      }
+    }
+
+    // Keyboard Fallbacks
     if (this.keys.S) rawPitch = 1.0;   // S = Pull back -> Pitch Up
     if (this.keys.W) rawPitch = -1.0;  // W = Push forward -> Pitch Down
     if (this.keys.D) rawRoll = 1.0;    // D = Bank Right
@@ -178,20 +235,20 @@ class DogfightJoystickManager {
 
     if (this.keys.Space || this.isMouseDown) {
       triggerPressed = true;
+      this.lastPressedButton = this.keys.Space ? 'Spacebar' : 'Mouse Left';
     }
 
-    // Apply inversion
+    // Apply pitch/roll inversions
     const pitch = this.invertPitch ? -rawPitch : rawPitch;
     const roll = this.invertRoll ? -rawRoll : rawRoll;
 
-    // Update throttle smoothly (0.75 to 1.45)
+    // Smooth throttle update (0.70 to 1.45)
     if (throttleDelta > 0) {
       this.throttle = Math.min(1.45, this.throttle + 0.35 * 0.016);
     } else if (throttleDelta < 0) {
       this.throttle = Math.max(0.70, this.throttle - 0.35 * 0.016);
     }
 
-    // Continuous fire trigger callback
     if (triggerPressed && this.callbacks.onFire) {
       this.callbacks.onFire();
     }
@@ -203,6 +260,7 @@ class DogfightJoystickManager {
       throttle: this.throttle,
       isFiring: triggerPressed,
       showScoreboard: this.keys.Tab,
+      lastPressedButton: this.lastPressedButton,
     };
   }
 }

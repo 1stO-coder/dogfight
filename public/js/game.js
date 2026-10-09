@@ -2,6 +2,31 @@
  * Sky Ace: Dogfight Arena - Main Client Game Engine
  * Coordinates flight physics, multi-target combat, respawns, HUD, and network sync.
  */
+
+// Shared Battlefield Terrain Mountains (Must fly around/above!)
+const MOUNTAINS = [
+  { name: 'MT. TITAN', x: 0, y: 780, r: 260, h: 140 },
+  { name: 'SOUTH CRAG', x: 0, y: -780, r: 260, h: 135 },
+  { name: 'TWIN PEAKS', x: 780, y: 0, r: 270, h: 140 },
+  { name: 'IRON CLIFF', x: -780, y: 0, r: 270, h: 140 },
+  { name: "EAGLE'S PILLAR", x: 380, y: 380, r: 180, h: 95 },
+  { name: "DRAGON'S TOOTH", x: -380, y: 360, r: 170, h: 90 },
+  { name: "OBSIDIAN RIDGE", x: 360, y: -380, r: 180, h: 92 },
+  { name: "VIPER PEAK", x: -360, y: -380, r: 170, h: 88 },
+];
+
+function getTerrainHeight(x, y) {
+  let maxH = 0;
+  for (let m of MOUNTAINS) {
+    const dist = Math.hypot(x - m.x, y - m.y);
+    if (dist < m.r) {
+      const h = m.h * (1 - Math.pow(dist / m.r, 1.1));
+      if (h > maxH) maxH = h;
+    }
+  }
+  return maxH;
+}
+
 class DogfightGame {
   constructor() {
     this.canvas = document.getElementById('flight-canvas');
@@ -22,15 +47,23 @@ class DogfightGame {
       pitch: 0,
       roll: 0,
       speed: 95,
+      level: 1,
       hp: 100,
       maxHp: 100,
       isDead: false,
       hasShield: true,
       shieldUntil: performance.now() + 3000,
+      hasDamageBoost: false,
+      damageBoostUntil: 0,
       kills: 0,
       deaths: 0,
       score: 0,
     };
+
+    // Tactical In-Game Items & Terrain Proximity
+    this.items = [];
+    this.terrainWarning = false;
+    this.terrainDist = 0;
 
     // Remote Players Dictionary: id -> playerObject
     this.otherPlayers = {};
@@ -50,6 +83,11 @@ class DogfightGame {
     // Game Mode: 'lobby' | 'flight'
     this.mode = 'lobby';
 
+    // Combat Airspace Boundary Tracking (1200m Radius Arena)
+    this.distFromCenter = 0;
+    this.boundaryState = 'safe'; // 'safe' | 'caution' | 'danger'
+    this.boundaryTimeRemaining = 5.0;
+
     // Animation loop
     this.lastFrameTime = performance.now();
     this.animationFrameId = null;
@@ -57,6 +95,7 @@ class DogfightGame {
     // DOM Elements
     this.dom = {
       lobbyModal: document.getElementById('modal-lobby'),
+      lobbyErrorMsg: document.getElementById('lobby-error-msg'),
       hudContainer: document.getElementById('hud-container'),
       deathOverlay: document.getElementById('overlay-death'),
       deathKillerName: document.getElementById('death-killer-name'),
@@ -71,10 +110,10 @@ class DogfightGame {
       hudDeaths: document.getElementById('hud-deaths'),
       hudPing: document.getElementById('hud-ping'),
       hudShieldBadge: document.getElementById('hud-shield-badge'),
+      hudDmgBadge: document.getElementById('hud-dmg-badge'),
+      hudLevelBadge: document.getElementById('hud-level-badge'),
       inputCallsign: document.getElementById('input-callsign'),
-      inputRoom: document.getElementById('input-room'),
       btnJoin: document.getElementById('btn-join'),
-      btnCreate: document.getElementById('btn-create'),
       colorPicker: document.querySelectorAll('.color-choice'),
       joystickBadge: document.getElementById('joystick-status-badge'),
       invertPitchBtn: document.getElementById('btn-invert-pitch'),
@@ -88,13 +127,6 @@ class DogfightGame {
   }
 
   initEventListeners() {
-    // Check URL parameters for direct room join
-    const urlParams = new URLSearchParams(window.location.search);
-    const roomParam = urlParams.get('room');
-    if (roomParam && this.dom.inputRoom) {
-      this.dom.inputRoom.value = roomParam.toUpperCase();
-    }
-
     // Color picker
     this.dom.colorPicker.forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -118,24 +150,24 @@ class DogfightGame {
       });
     }
 
-    // Join Button
+    // Join Button (Single shared arena)
     if (this.dom.btnJoin) {
       this.dom.btnJoin.addEventListener('click', () => this.handleJoinRoom());
     }
 
-    // Create Room Button
-    if (this.dom.btnCreate) {
-      this.dom.btnCreate.addEventListener('click', () => {
-        const randCode = 'ACE-' + Math.floor(10 + Math.random() * 90);
-        this.dom.inputRoom.value = randCode;
-        this.handleJoinRoom();
+    // Input Enter key triggers join
+    if (this.dom.inputCallsign) {
+      this.dom.inputCallsign.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          this.handleJoinRoom();
+        }
       });
     }
 
     // Copy Link Button
     if (this.dom.btnCopyLink) {
       this.dom.btnCopyLink.addEventListener('click', () => {
-        const url = `${window.location.origin}/?room=${encodeURIComponent(this.network.roomCode || '')}`;
+        const url = window.location.origin;
         navigator.clipboard.writeText(url).then(() => {
           this.dom.btnCopyLink.textContent = '✓ Copied Link!';
           setTimeout(() => (this.dom.btnCopyLink.textContent = '🔗 Share Link'), 2000);
@@ -143,7 +175,7 @@ class DogfightGame {
       });
     }
 
-    // Joystick device badge updates
+    // Joystick device badge updates & button test feedback
     this.joystick.callbacks.onConnectionChange = (info) => {
       this.updateJoystickBadge(info);
     };
@@ -153,8 +185,9 @@ class DogfightGame {
   updateJoystickBadge(info) {
     if (!this.dom.joystickBadge) return;
     if (info.connected) {
-      const short = info.name.length > 25 ? info.name.substring(0, 23) + '...' : info.name;
-      this.dom.joystickBadge.innerHTML = `<span class="dot connected">●</span> 🎮 ${short}`;
+      const short = info.name.length > 28 ? info.name.substring(0, 26) + '...' : info.name;
+      const lastKey = this.joystick.lastPressedButton ? ` • [${this.joystick.lastPressedButton}]` : '';
+      this.dom.joystickBadge.innerHTML = `<span class="dot connected">●</span> 🎮 ${short}${lastKey}`;
       this.dom.joystickBadge.classList.add('connected');
     } else {
       this.dom.joystickBadge.innerHTML = `<span class="dot">○</span> ⌨️ Keyboard Mode (W/S/A/D)`;
@@ -163,20 +196,34 @@ class DogfightGame {
   }
 
   async handleJoinRoom() {
-    const callsign = (this.dom.inputCallsign.value || 'Maverick').trim();
-    let room = (this.dom.inputRoom.value || 'SKY-1').trim().toUpperCase();
+    const callsign = (this.dom.inputCallsign.value || '').trim();
+    if (!callsign) {
+      if (this.dom.lobbyErrorMsg) {
+        this.dom.lobbyErrorMsg.textContent = 'กรุณากรอกชื่อนักบินก่อนเข้าเล่น (Enter Callsign)';
+        this.dom.lobbyErrorMsg.style.display = 'block';
+      }
+      return;
+    }
+
+    if (this.dom.lobbyErrorMsg) {
+      this.dom.lobbyErrorMsg.style.display = 'none';
+    }
 
     this.player.callsign = callsign;
     this.audio.init();
 
     try {
       this.dom.btnJoin.disabled = true;
-      this.dom.btnJoin.textContent = 'Connecting...';
-      await this.network.connect(room, callsign, this.player.color);
+      this.dom.btnJoin.textContent = 'Connecting to Arena...';
+      // Connect to single shared ARENA
+      await this.network.connect('ARENA', callsign, this.player.color);
     } catch (e) {
-      alert('Failed to connect to Dogfight server: ' + e);
+      if (this.dom.lobbyErrorMsg) {
+        this.dom.lobbyErrorMsg.textContent = 'เกิดข้อผิดพลาดในการเชื่อมต่อ: ' + e;
+        this.dom.lobbyErrorMsg.style.display = 'block';
+      }
       this.dom.btnJoin.disabled = false;
-      this.dom.btnJoin.textContent = 'Engage Sortie';
+      this.dom.btnJoin.textContent = 'ENGAGE SORTIE (เข้าสู่สนามรบ)';
     }
   }
 
@@ -188,8 +235,11 @@ class DogfightGame {
       this.mode = 'flight';
 
       if (this.dom.roomBanner) {
-        this.dom.roomBanner.textContent = `ROOM: ${data.room}`;
+        this.dom.roomBanner.textContent = `ARENA (1200m)`;
       }
+
+      // Initialize items from server
+      this.items = data.items || [];
 
       // Initialize remote players list
       this.otherPlayers = {};
@@ -220,14 +270,21 @@ class DogfightGame {
       this.addKillFeedNotice(`💨 [${callsign}] departed airspace`);
     };
 
-    this.network.callbacks.onWorldUpdate = (players) => {
+    this.network.callbacks.onWorldUpdate = (players, items) => {
+      if (items) {
+        this.items = items;
+      }
+
       for (let p of players) {
         if (p.id === this.player.id) {
-          // Update local scores from server
+          // Update local scores & buffs from server
           this.player.kills = p.kills;
           this.player.deaths = p.deaths;
           this.player.score = p.score;
+          this.player.level = p.level || this.player.level;
+          this.player.maxHp = p.maxHp || this.player.maxHp;
           this.player.hasShield = p.hasShield;
+          this.player.hasDamageBoost = p.hasDamageBoost;
         } else {
           // Interpolate remote player
           if (!this.otherPlayers[p.id]) {
@@ -242,8 +299,11 @@ class DogfightGame {
             op.roll = p.roll;
             op.speed = p.speed;
             op.hp = p.hp;
+            op.maxHp = p.maxHp || 100;
+            op.level = p.level || 1;
             op.isDead = p.isDead;
             op.hasShield = p.hasShield;
+            op.hasDamageBoost = p.hasDamageBoost;
             op.kills = p.kills;
             op.deaths = p.deaths;
             op.score = p.score;
@@ -253,8 +313,46 @@ class DogfightGame {
       }
     };
 
+    this.network.callbacks.onItemCollected = (data) => {
+      this.items = this.items.filter((it) => it.id !== data.itemId);
+
+      if (data.collectorId === this.player.id) {
+        this.player.hp = data.collectorHp;
+        this.player.maxHp = data.collectorMaxHp;
+
+        if (data.itemType === 'medkit') {
+          this.audio.playItemPickup('medkit');
+          this.showPowerupSplash('💚 MEDKIT COLLECTED!', '+50 HP HULL REPAIRED');
+        } else if (data.itemType === 'damage_boost') {
+          this.audio.playItemPickup('damage_boost');
+          this.player.hasDamageBoost = true;
+          this.player.damageBoostUntil = performance.now() + 120000;
+          this.showPowerupSplash('⚡ OVERCHARGED CANNONS!', '2X DAMAGE • 2 MINUTES DURATION');
+        } else if (data.itemType === 'shield') {
+          this.audio.playItemPickup('shield');
+          this.player.hasShield = true;
+          this.player.shieldUntil = performance.now() + 120000;
+          this.showPowerupSplash('🛡️ ENERGY SHIELD ENGAGED!', 'PROTECTIVE ARMOR • 2 MINUTES DURATION');
+        }
+      } else {
+        const p = this.otherPlayers[data.collectorId];
+        if (p) {
+          p.hp = data.collectorHp;
+          p.maxHp = data.collectorMaxHp;
+          if (data.itemType === 'shield') p.hasShield = true;
+          if (data.itemType === 'damage_boost') p.hasDamageBoost = true;
+        }
+      }
+    };
+
+    this.network.callbacks.onItemSpawned = (data) => {
+      if (data.item) {
+        this.items = this.items.filter((it) => it.id !== data.item.id);
+        this.items.push(data.item);
+      }
+    };
+
     this.network.callbacks.onWeaponFired = (data) => {
-      // Audio or visual tracer from remote shooter
       const shooter = this.otherPlayers[data.shooterId];
       if (shooter && shooter.dist !== undefined && shooter.dist < 800) {
         // Subtle distant cannon burst
@@ -263,7 +361,6 @@ class DogfightGame {
 
     this.network.callbacks.onPlayerDamaged = (data) => {
       if (data.targetId === this.player.id) {
-        // Local player took damage!
         this.player.hp = data.hp;
         this.renderer.triggerShake(90, 5);
         this.renderer.triggerFlash(90, 'rgba(239, 68, 68, 0.45)');
@@ -272,7 +369,6 @@ class DogfightGame {
           this.audio.playWarningSiren();
         }
       } else {
-        // Remote player took damage
         const tgt = this.otherPlayers[data.targetId];
         if (tgt) {
           tgt.hp = data.hp;
@@ -287,14 +383,22 @@ class DogfightGame {
 
       // If local player scored the kill!
       if (data.killerId === this.player.id) {
-        this.audio.playKillReward();
-        this.showKillConfirmedSplash(victimName);
+        this.player.kills = (this.player.kills || 0) + 1;
+        this.player.level = data.killerLevel || (this.player.level + 1);
+        this.player.maxHp = data.killerMaxHp || (100 + (this.player.level - 1) * 15);
+        this.player.hp = data.killerHp || Math.min(this.player.maxHp, this.player.hp + 40);
+        this.audio.playLevelUp();
+        this.showKillConfirmedSplash(victimName, this.player.level, data.hpReward || 40);
       }
 
-      // If local player was killed!
+      // If local player was killed! (Reset level to LV.1)
       if (data.victimId === this.player.id) {
         this.player.isDead = true;
         this.player.hp = 0;
+        this.player.level = 1;
+        this.player.maxHp = 100;
+        this.player.hasDamageBoost = false;
+        this.player.damageBoostUntil = 0;
         this.audio.playExplosion();
         this.renderer.triggerShake(450, 15);
         this.renderer.triggerFlash(400, 'rgba(239, 68, 68, 0.8)');
@@ -302,9 +406,14 @@ class DogfightGame {
       } else {
         // Remote plane exploded
         const victim = this.otherPlayers[data.victimId];
-        if (victim && victim.screenX !== undefined && victim.inFront) {
-          this.renderer.addExplosion(victim.screenX, victim.screenY, 1.8);
-          this.audio.playExplosion();
+        if (victim) {
+          victim.isDead = true;
+          victim.level = 1;
+          victim.maxHp = 100;
+          if (victim.screenX !== undefined && victim.inFront) {
+            this.renderer.addExplosion(victim.screenX, victim.screenY, 1.8);
+            this.audio.playExplosion();
+          }
         }
       }
     };
@@ -313,7 +422,11 @@ class DogfightGame {
       if (data.playerId === this.player.id) {
         // Local player respawned
         this.player.isDead = false;
+        this.player.level = 1; // Resets to LV.1 on death!
+        this.player.maxHp = 100;
         this.player.hp = 100;
+        this.player.hasDamageBoost = false;
+        this.player.damageBoostUntil = 0;
         this.player.x = data.x;
         this.player.y = data.y;
         this.player.alt = data.alt;
@@ -330,6 +443,8 @@ class DogfightGame {
         const p = this.otherPlayers[data.playerId];
         if (p) {
           p.isDead = false;
+          p.level = 1;
+          p.maxHp = 100;
           p.hp = 100;
           p.x = data.x;
           p.y = data.y;
@@ -343,9 +458,18 @@ class DogfightGame {
     };
 
     this.network.callbacks.onError = (msg) => {
-      alert(msg);
+      if (this.dom.lobbyErrorMsg) {
+        this.dom.lobbyErrorMsg.textContent = msg;
+        this.dom.lobbyErrorMsg.style.display = 'block';
+      } else {
+        alert(msg);
+      }
       this.dom.btnJoin.disabled = false;
-      this.dom.btnJoin.textContent = 'Engage Sortie';
+      this.dom.btnJoin.textContent = 'ENGAGE SORTIE (เข้าสู่สนามรบ)';
+      if (this.dom.inputCallsign) {
+        this.dom.inputCallsign.focus();
+        this.dom.inputCallsign.select();
+      }
     };
 
     this.network.callbacks.onDisconnect = () => {
@@ -383,7 +507,8 @@ class DogfightGame {
         this.audio.playHitTarget();
         this.renderer.addExplosion(tx, ty, 0.7);
         this.renderer.triggerFlash(90, 'rgba(255, 176, 46, 0.4)');
-        this.network.sendHit(this.lockedTarget.id, 12);
+        const dmg = this.player.hasDamageBoost ? 24 : 12;
+        this.network.sendHit(this.lockedTarget.id, dmg);
       }
     }
   }
@@ -412,12 +537,36 @@ class DogfightGame {
     }
   }
 
-  showKillConfirmedSplash(victimName) {
+  showKillConfirmedSplash(victimName, newLevel, hpGain) {
     const banner = document.createElement('div');
     banner.className = 'kill-splash-banner';
-    banner.innerHTML = `<span class="accent">💥 KILL CONFIRMED</span> • ${victimName} (+100 PTS)`;
+    const rankTitle = this.getRankTitle(newLevel);
+    banner.innerHTML = `
+      <div style="font-size:17px; color:#38bdf8; font-weight:bold;">💥 KILL CONFIRMED • ${victimName}</div>
+      <div style="font-size:13px; color:#10b981; margin-top:4px;">💚 REPAIR +${hpGain} HP • ⭐ LEVEL UP! [LV.${newLevel} ${rankTitle}]</div>
+    `;
     document.body.appendChild(banner);
-    setTimeout(() => banner.remove(), 2200);
+    setTimeout(() => banner.remove(), 2600);
+  }
+
+  showPowerupSplash(title, desc) {
+    const banner = document.createElement('div');
+    banner.className = 'powerup-splash-banner';
+    banner.innerHTML = `
+      <div style="font-size:16px; font-weight:bold;">${title}</div>
+      <div style="font-size:12px; color:#cbd5e1; margin-top:3px;">${desc}</div>
+    `;
+    document.body.appendChild(banner);
+    setTimeout(() => banner.remove(), 2600);
+  }
+
+  getRankTitle(lvl) {
+    if (lvl <= 1) return 'ROOKIE';
+    if (lvl === 2) return 'FIGHTER';
+    if (lvl === 3) return 'VETERAN';
+    if (lvl === 4) return 'ACE';
+    if (lvl === 5) return 'MASTER ACE';
+    return 'TOP GUN';
   }
 
   addKillFeedEntry(killer, victim) {
@@ -441,12 +590,17 @@ class DogfightGame {
   updateHUD() {
     // Local HP bar
     if (this.dom.hudHpBar) {
-      const pct = Math.max(0, this.player.hp);
+      const maxHp = this.player.maxHp || 100;
+      const pct = Math.max(0, Math.min(100, (this.player.hp / maxHp) * 100));
       this.dom.hudHpBar.style.width = `${pct}%`;
       this.dom.hudHpBar.className = pct > 50 ? 'hp-good' : (pct > 25 ? 'hp-warn' : 'hp-crit');
     }
     if (this.dom.hudHpText) {
-      this.dom.hudHpText.textContent = `${this.player.hp} / 100`;
+      this.dom.hudHpText.textContent = `${Math.round(this.player.hp)} / ${this.player.maxHp || 100}`;
+    }
+    if (this.dom.hudLevelBadge) {
+      const rankTitle = this.getRankTitle(this.player.level || 1);
+      this.dom.hudLevelBadge.textContent = `⭐ LV. ${this.player.level || 1} ${rankTitle}`;
     }
     if (this.dom.hudKills) {
       this.dom.hudKills.textContent = `${this.player.kills}`;
@@ -457,8 +611,26 @@ class DogfightGame {
     if (this.dom.hudPing) {
       this.dom.hudPing.textContent = `${this.network.ping}ms`;
     }
+
+    // Active Buff Badges (Shield & Damage Boost)
     if (this.dom.hudShieldBadge) {
-      this.dom.hudShieldBadge.style.display = this.player.hasShield ? 'inline-block' : 'none';
+      if (this.player.hasShield) {
+        const sec = Math.max(0, Math.ceil((this.player.shieldUntil - performance.now()) / 1000));
+        this.dom.hudShieldBadge.textContent = `🛡️ SHIELD (${sec}s)`;
+        this.dom.hudShieldBadge.style.display = 'inline-block';
+      } else {
+        this.dom.hudShieldBadge.style.display = 'none';
+      }
+    }
+
+    if (this.dom.hudDmgBadge) {
+      if (this.player.hasDamageBoost) {
+        const sec = Math.max(0, Math.ceil((this.player.damageBoostUntil - performance.now()) / 1000));
+        this.dom.hudDmgBadge.textContent = `⚡ 2X DMG (${sec}s)`;
+        this.dom.hudDmgBadge.style.display = 'inline-block';
+      } else {
+        this.dom.hudDmgBadge.style.display = 'none';
+      }
     }
   }
 
@@ -471,6 +643,7 @@ class DogfightGame {
         {
           callsign: this.player.callsign,
           color: this.player.color,
+          level: this.player.level || 1,
           kills: this.player.kills,
           deaths: this.player.deaths,
           score: this.player.score,
@@ -480,6 +653,7 @@ class DogfightGame {
         ...Object.values(this.otherPlayers).map((p) => ({
           callsign: p.callsign,
           color: p.color,
+          level: p.level || 1,
           kills: p.kills || 0,
           deaths: p.deaths || 0,
           score: p.score || 0,
@@ -497,6 +671,7 @@ class DogfightGame {
         <tr class="${p.isMe ? 'row-me' : ''}">
           <td>#${idx + 1}</td>
           <td><span class="color-dot" style="background:${p.color}"></span> ${p.callsign} ${p.isMe ? '(YOU)' : ''}</td>
+          <td class="num font-bold text-cyan">LV.${p.level}</td>
           <td class="num">${p.kills}</td>
           <td class="num">${p.deaths}</td>
           <td class="num font-bold text-amber">${p.score}</td>
@@ -559,6 +734,45 @@ class DogfightGame {
           this.player.hasShield = false;
         }
 
+        // Check damage boost expiry
+        if (this.player.hasDamageBoost && performance.now() > this.player.damageBoostUntil) {
+          this.player.hasDamageBoost = false;
+        }
+
+        // Terrain Mountain Check & GPWS Proximity Warning
+        const groundH = getTerrainHeight(this.player.x, this.player.y);
+        const clearance = this.player.alt - groundH;
+
+        // GPWS Forward Lookahead (120m ahead)
+        const hRad = (this.player.heading * Math.PI) / 180;
+        const lookX = this.player.x + Math.sin(hRad) * 120;
+        const lookY = this.player.y + Math.cos(hRad) * 120;
+        const aheadH = getTerrainHeight(lookX, lookY);
+
+        if (aheadH > this.player.alt - 8 && aheadH > 25) {
+          this.terrainWarning = true;
+          this.terrainDist = Math.hypot(lookX - this.player.x, lookY - this.player.y);
+          if (timestamp % 700 < 60) {
+            this.audio.playTerrainWarning();
+          }
+        } else {
+          this.terrainWarning = false;
+        }
+
+        // Mountain Crash Destruction
+        if (clearance <= 0 && !this.player.isDead) {
+          this.player.hp = 0;
+          this.player.isDead = true;
+          this.player.level = 1;
+          this.player.maxHp = 100;
+          this.player.hasDamageBoost = false;
+          this.player.damageBoostUntil = 0;
+          this.audio.playExplosion();
+          this.renderer.triggerShake(500, 20);
+          this.renderer.triggerFlash(400, 'rgba(239, 68, 68, 0.85)');
+          this.showDeathScreen('MOUNTAIN TERRAIN (ชนภูเขา)', 3.0);
+        }
+
         // Network State Sync (25 Hz)
         if (timestamp - this.lastNetworkSyncTime > this.networkSyncIntervalMs) {
           this.lastNetworkSyncTime = timestamp;
@@ -618,25 +832,65 @@ class DogfightGame {
         this.targetWasLocked = false;
       }
 
-      // Render 3D World & HUD
-      this.renderer.render(
-        {
-          pitch: this.player.pitch,
-          roll: this.player.roll,
-          heading: this.player.heading,
-          speed: this.player.speed,
-          throttle: input.throttle,
-          altitude: this.player.alt,
-          distance: this.flightDistance,
-          hp: this.player.hp,
-          isDead: this.player.isDead,
-          myPlane: this.player,
-          otherPlayers: otherList,
-          lockedTarget: this.lockedTarget,
-          leadPoint: this.leadPoint,
-        },
-        dt
-      );
+        // Combat Airspace Boundary Tracking (Arena Radius = 1200m)
+        const distFromCenter = Math.hypot(this.player.x, this.player.y);
+        this.distFromCenter = distFromCenter;
+
+        if (distFromCenter <= 950) {
+          this.boundaryState = 'safe';
+          this.boundaryTimeRemaining = 5.0;
+        } else if (distFromCenter <= 1150) {
+          this.boundaryState = 'caution';
+          this.boundaryTimeRemaining = 5.0;
+        } else {
+          // Danger / Out-of-bounds Zone (> 1150m)
+          this.boundaryState = 'danger';
+          this.boundaryTimeRemaining = Math.max(0, this.boundaryTimeRemaining - dt);
+
+          if (timestamp % 900 < 60) {
+            this.audio.playWarningSiren();
+          }
+
+          // Crossing 1200m perimeter: Autopilot smooth turn towards battlefield center (0, 0)
+          if (distFromCenter >= 1200) {
+            const targetH = (Math.atan2(-this.player.x, -this.player.y) * 180) / Math.PI;
+            const diffH = ((targetH - this.player.heading + 540) % 360) - 180;
+            const autoRoll = Math.sign(diffH) * 45;
+            this.player.roll += (autoRoll - this.player.roll) * 3.5 * dt;
+
+            // Health penalty if staying outside > 5 seconds
+            if (this.boundaryTimeRemaining <= 0) {
+              this.player.hp = Math.max(1, this.player.hp - 12 * dt);
+            }
+          }
+        }
+
+        // Render 3D World & HUD
+        this.renderer.render(
+          {
+            pitch: this.player.pitch,
+            roll: this.player.roll,
+            heading: this.player.heading,
+            speed: this.player.speed,
+            throttle: input.throttle,
+            altitude: this.player.alt,
+            distance: this.flightDistance,
+            hp: this.player.hp,
+            isDead: this.player.isDead,
+            myPlane: this.player,
+            otherPlayers: otherList,
+            items: this.items,
+            isFiring: input.isFiring,
+            lockedTarget: this.lockedTarget,
+            leadPoint: this.leadPoint,
+            distFromCenter: this.distFromCenter,
+            boundaryState: this.boundaryState,
+            boundaryTimeRem: this.boundaryTimeRemaining,
+            terrainWarning: this.terrainWarning,
+            terrainDist: this.terrainDist,
+          },
+          dt
+        );
 
       this.updateHUD();
       this.renderScoreboard(input.showScoreboard);

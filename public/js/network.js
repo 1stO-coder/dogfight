@@ -21,6 +21,8 @@ class DogfightNetworkManager {
       onPlayerDamaged: null,
       onPlayerKilled: null,
       onPlayerRespawned: null,
+      onItemCollected: null,
+      onItemSpawned: null,
       onChatMessage: null,
       onError: null,
       onDisconnect: null,
@@ -159,7 +161,15 @@ class DogfightNetworkManager {
         break;
 
       case 'world_update':
-        if (this.callbacks.onWorldUpdate) this.callbacks.onWorldUpdate(msg.players);
+        if (this.callbacks.onWorldUpdate) this.callbacks.onWorldUpdate(msg.players, msg.items);
+        break;
+
+      case 'item_collected':
+        if (this.callbacks.onItemCollected) this.callbacks.onItemCollected(msg);
+        break;
+
+      case 'item_spawned':
+        if (this.callbacks.onItemSpawned) this.callbacks.onItemSpawned(msg);
         break;
 
       case 'weapon_fired':

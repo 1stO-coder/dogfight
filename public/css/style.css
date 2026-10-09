@@ -116,6 +116,18 @@ body {
   color: #000;
 }
 
+/* Level Tag */
+.hud-level-tag {
+  background: rgba(245, 158, 11, 0.25);
+  border: 1px solid #f59e0b;
+  color: #fbbf24;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
 /* Shield Badge */
 .hud-shield-badge {
   background: rgba(56, 189, 248, 0.3);
@@ -131,6 +143,23 @@ body {
 @keyframes pulse-shield {
   from { opacity: 0.6; }
   to { opacity: 1; text-shadow: 0 0 8px #38bdf8; }
+}
+
+/* Damage Boost Badge */
+.hud-dmg-badge {
+  background: rgba(245, 158, 11, 0.35);
+  border: 1px solid #f59e0b;
+  color: #f59e0b;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: bold;
+  animation: pulse-dmg 1s infinite alternate;
+}
+
+@keyframes pulse-dmg {
+  from { opacity: 0.7; }
+  to { opacity: 1; text-shadow: 0 0 8px #f59e0b; }
 }
 
 /* Bottom Health & Status Bar */
@@ -250,6 +279,24 @@ body {
   color: #f59e0b;
 }
 
+.powerup-splash-banner {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(7, 24, 38, 0.95);
+  border: 2px solid var(--primary-cyan);
+  box-shadow: 0 0 30px rgba(56, 189, 248, 0.6);
+  padding: 12px 28px;
+  border-radius: 6px;
+  font-family: monospace;
+  text-align: center;
+  color: #ffffff;
+  pointer-events: none;
+  animation: splash-anim 2.6s forwards ease-out;
+  z-index: 55;
+}
+
 @keyframes splash-anim {
   0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
   15% { transform: translate(-50%, -50%) scale(1.1); opacity: 1; }
@@ -304,6 +351,19 @@ body {
   font-size: 12px;
   color: #94a3b8;
   margin-top: 4px;
+}
+
+.lobby-error-banner {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid #ef4444;
+  color: #fca5a5;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.25);
 }
 
 .form-group {
@@ -504,6 +564,19 @@ body {
 
 .death-subtitle strong {
   color: #ffffff;
+}
+
+.death-reset-badge {
+  background: rgba(239, 68, 68, 0.25);
+  border: 1px solid #ef4444;
+  color: #fca5a5;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: bold;
+  padding: 5px 14px;
+  border-radius: 4px;
+  margin-bottom: 20px;
+  letter-spacing: 1px;
 }
 
 .respawn-timer-box {

@@ -138,7 +138,7 @@ class DogfightRenderer {
     ctx.fillRect(0, 0, this.width, this.height);
 
     // 3. 3D Moving Horizon & Perspective Ground Grid
-    this.drawHorizon(ctx, state.pitch, state.roll, state.distance || 0, state.speed || 95, dt);
+    this.drawHorizon(ctx, state.pitch, state.roll, state.distance || 0, state.speed || 95, dt, state.myPlane, now);
 
     // 4. 3D Atmospheric Speed Streamers
     this.drawSpeedStreamers(ctx, state.pitch, state.roll, state.speed || 95, dt);
@@ -149,6 +149,11 @@ class DogfightRenderer {
     // 6. Multi-Aircraft 3D Rendering (all other pilots in the room)
     if (state.otherPlayers && state.otherPlayers.length > 0) {
       this.drawOtherAircraft(ctx, state.otherPlayers, state.myPlane, state.pitch, state.roll, now);
+    }
+
+    // 6.5. 3D Collectible Items in Airspace (Medkit, Damage Boost, Shield)
+    if (state.items && state.items.length > 0) {
+      this.draw3DItems(ctx, state.items, state.myPlane, state.pitch, state.roll, now);
     }
 
     // 7. Cannon Tracers & Smoke & Explosions
@@ -164,11 +169,21 @@ class DogfightRenderer {
     this.drawAltimeterTape(ctx, state.altitude || 50, now);
     this.drawCompassRibbon(ctx, state.heading || 0);
 
-    // 10. Tactical 360° Radar Scope
-    this.drawTacticalRadar(ctx, state.myPlane, state.otherPlayers, now);
+    // 10. Tactical 360° Radar Scope (with Combat Boundary & Landmarks & Items)
+    this.drawTacticalRadar(ctx, state.myPlane, state.otherPlayers, state.items, now);
 
-    // 11. Cockpit Frame Bezel
-    this.drawCockpitFrame(ctx);
+    // 11. Cockpit Frame Bezel & 1st-Person Fighter Jet View
+    this.drawCockpitFrame(ctx, state.myPlane, state.pitch, state.roll, now, state.isFiring);
+
+    // 11.5. Combat Airspace Boundary Alert HUD
+    if (state.boundaryState && state.boundaryState !== 'safe') {
+      this.drawBoundaryAlertHUD(ctx, state.distFromCenter, state.boundaryState, state.boundaryTimeRem, now);
+    }
+
+    // 11.6. Terrain Proximity Warning System (GPWS)
+    if (state.terrainWarning) {
+      this.drawTerrainWarningHUD(ctx, state.terrainDist, now);
+    }
 
     // 12. Screen Damage Flash
     if (this.flashDuration > 0) {
@@ -210,7 +225,7 @@ class DogfightRenderer {
     ctx.restore();
   }
 
-  drawHorizon(ctx, pitch, roll, distance, speed, dt) {
+  drawHorizon(ctx, pitch, roll, distance, speed, dt, myPlane, now) {
     ctx.save();
     const cx = this.width / 2;
     const cy = this.height / 2;
@@ -273,7 +288,260 @@ class DogfightRenderer {
       ctx.stroke();
     }
 
+    // 3D Terrain Landmarks (Airbase, Mountains, Beacons, Boundaries)
+    if (myPlane) {
+      this.draw3DTerrain(ctx, myPlane, now || performance.now());
+    }
+
     ctx.restore();
+  }
+
+  draw3DTerrain(ctx, myPlane, now) {
+    if (!myPlane) return;
+    const myHRad = (myPlane.heading * Math.PI) / 180;
+    const sinH = Math.sin(myHRad);
+    const cosH = Math.cos(myHRad);
+    const alt = myPlane.alt;
+
+    // Helper: Project world point (wx, wy, wz_elevation) into Horizon space
+    const project = (wx, wy, wz = 0) => {
+      const dx = wx - myPlane.x;
+      const dy = wy - myPlane.y;
+      const relZ = dx * sinH + dy * cosH; // Forward axis (+ = ahead)
+      const relX = dx * cosH - dy * sinH; // Right axis (+ = right)
+      if (relZ <= 15) return null; // Behind plane
+
+      const k = 620 / Math.max(20, relZ);
+      const hx = relX * k;
+      const hy = Math.max(-500, (alt - wz) * 8.0 * k); // Altitude relative drop
+      return { x: hx, y: hy, z: relZ };
+    };
+
+    // 1. Central Airbase Runway (wx: 0, wy: 0, length: 520, width: 60)
+    const rwL = 260;
+    const rwW = 32;
+    const pNW = project(-rwW, rwL, 0);
+    const pNE = project(rwW, rwL, 0);
+    const pSE = project(rwW, -rwL, 0);
+    const pSW = project(-rwW, -rwL, 0);
+
+    if (pNW && pNE && pSE && pSW) {
+      // Dark asphalt tarmac
+      ctx.fillStyle = '#1e293b';
+      ctx.strokeStyle = '#475569';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(pNW.x, pNW.y);
+      ctx.lineTo(pNE.x, pNE.y);
+      ctx.lineTo(pSE.x, pSE.y);
+      ctx.lineTo(pSW.x, pSW.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // White centerline stripes
+      ctx.strokeStyle = '#f8fafc';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      for (let yOff = -220; yOff <= 220; yOff += 55) {
+        const p1 = project(0, yOff - 16, 0);
+        const p2 = project(0, yOff + 16, 0);
+        if (p1 && p2) {
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+        }
+      }
+      ctx.stroke();
+
+      // Runway Lights: Green (North threshold), Red (South threshold), Amber (sides)
+      const lights = [
+        { wx: -rwW, wy: rwL, col: '#10b981' },
+        { wx: rwW, wy: rwL, col: '#10b981' },
+        { wx: -rwW, wy: -rwL, col: '#ef4444' },
+        { wx: rwW, wy: -rwL, col: '#ef4444' },
+        { wx: -rwW, wy: 0, col: '#f59e0b' },
+        { wx: rwW, wy: 0, col: '#f59e0b' },
+      ];
+      for (let l of lights) {
+        const pl = project(l.wx, l.wy, 0);
+        if (pl) {
+          ctx.fillStyle = l.col;
+          ctx.beginPath();
+          ctx.arc(pl.x, pl.y, Math.max(2, 60 / (pl.z * 0.1)), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // Airbase Label
+      const pCenter = project(0, 0, 0);
+      if (pCenter && pCenter.z < 850) {
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('AIRBASE [0,0]', pCenter.x, pCenter.y - 12);
+      }
+    }
+
+    // 2. 3D Mountain Peaks (Sorted back-to-front)
+    const mountains = [
+      // 4 Outer Perimeter Peaks
+      { name: 'MT. TITAN (N)', wx: 0, wy: 780, r: 260, h: 140, col: '#334155', snow: true },
+      { name: 'SOUTH CRAG (S)', wx: 0, wy: -780, r: 260, h: 135, col: '#334155', snow: false },
+      { name: 'TWIN PEAKS (E)', wx: 780, wy: 0, r: 270, h: 140, col: '#3b4252', snow: true },
+      { name: 'IRON CLIFF (W)', wx: -780, wy: 0, r: 270, h: 140, col: '#2e3440', snow: false },
+      // 4 Mid-Field Tactical Peaks (88m - 95m, in combat flight paths!)
+      { name: "EAGLE'S PILLAR", wx: 380, wy: 380, r: 180, h: 95, col: '#334155', snow: false },
+      { name: "DRAGON'S TOOTH", wx: -380, wy: 360, r: 170, h: 90, col: '#2e3440', snow: false },
+      { name: "OBSIDIAN RIDGE", wx: 360, wy: -380, r: 180, h: 92, col: '#3b4252', snow: false },
+      { name: "VIPER PEAK", wx: -360, wy: -380, r: 170, h: 88, col: '#2e3440', snow: false },
+    ];
+
+    mountains.sort((a, b) => {
+      const da = Math.hypot(a.wx - myPlane.x, a.wy - myPlane.y);
+      const db = Math.hypot(b.wx - myPlane.x, b.wy - myPlane.y);
+      return db - da;
+    });
+
+    for (let m of mountains) {
+      const pPeak = project(m.wx, m.wy, m.h);
+      const pL = project(m.wx - m.r * 0.9, m.wy, 0);
+      const pR = project(m.wx + m.r * 0.9, m.wy, 0);
+      const pB = project(m.wx, m.wy - m.r * 0.5, 0);
+
+      if (pPeak && pL && pR && pB) {
+        // Left shaded slope
+        ctx.fillStyle = m.col;
+        ctx.beginPath();
+        ctx.moveTo(pPeak.x, pPeak.y);
+        ctx.lineTo(pL.x, pL.y);
+        ctx.lineTo(pB.x, pB.y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Right illuminated slope
+        ctx.fillStyle = '#475569';
+        ctx.beginPath();
+        ctx.moveTo(pPeak.x, pPeak.y);
+        ctx.lineTo(pB.x, pB.y);
+        ctx.lineTo(pR.x, pR.y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Ridge lines
+        ctx.strokeStyle = '#64748b';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(pPeak.x, pPeak.y);
+        ctx.lineTo(pB.x, pB.y);
+        ctx.stroke();
+
+        // Snow Cap
+        if (m.snow) {
+          const pSnow = project(m.wx, m.wy, m.h * 0.72);
+          const pSnowL = project(m.wx - m.r * 0.28, m.wy, m.h * 0.65);
+          const pSnowR = project(m.wx + m.r * 0.28, m.wy, m.h * 0.65);
+          if (pSnow && pSnowL && pSnowR) {
+            ctx.fillStyle = '#f8fafc';
+            ctx.beginPath();
+            ctx.moveTo(pPeak.x, pPeak.y);
+            ctx.lineTo(pSnowL.x, pSnowL.y);
+            ctx.lineTo(pSnow.x, pSnow.y + 4);
+            ctx.lineTo(pSnowR.x, pSnowR.y);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+
+        // Peak elevation tag
+        if (pPeak.z < 1200) {
+          ctx.fillStyle = '#cbd5e1';
+          ctx.font = 'bold 10px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`▲ ${m.name}`, pPeak.x, pPeak.y - 8);
+        }
+      }
+    }
+
+    // 3. 4 Sector Waypoint Beacons (Holographic Light Beams)
+    const beacons = [
+      { name: 'WP-ALPHA', wx: 620, wy: 620, col: '#38bdf8' },
+      { name: 'WP-BRAVO', wx: 620, wy: -620, col: '#10b981' },
+      { name: 'WP-CHARLIE', wx: -620, wy: -620, col: '#f59e0b' },
+      { name: 'WP-DELTA', wx: -620, wy: 620, col: '#a855f7' },
+    ];
+
+    for (let b of beacons) {
+      const pBase = project(b.wx, b.wy, 0);
+      const pTop = project(b.wx, b.wy, 320); // 320m vertical laser beam
+      if (pBase && pTop) {
+        // Vertical beam
+        ctx.strokeStyle = b.col;
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = b.col;
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.moveTo(pBase.x, pBase.y);
+        ctx.lineTo(pTop.x, pTop.y);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Base emitter circle
+        ctx.strokeStyle = b.col;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(pBase.x, pBase.y, Math.max(3, 420 / pBase.z), 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Distance & Waypoint tag
+        const dist = Math.hypot(b.wx - myPlane.x, b.wy - myPlane.y);
+        ctx.fillStyle = b.col;
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`◇ ${b.name} (${Math.round(dist)}m)`, pBase.x, pBase.y - 14);
+      }
+    }
+
+    // 4. Combat Airspace Boundary Pylons (Ring at R = 1200m)
+    const curDist = Math.hypot(myPlane.x, myPlane.y);
+    const nearBoundary = curDist > 850;
+
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const px = Math.cos(a) * 1200;
+      const py = Math.sin(a) * 1200;
+      const pBase = project(px, py, 0);
+      const pTop = project(px, py, 260);
+
+      if (pBase && pTop) {
+        ctx.strokeStyle = nearBoundary ? '#ef4444' : 'rgba(239, 68, 68, 0.4)';
+        ctx.lineWidth = 2.0;
+        ctx.shadowColor = '#ef4444';
+        ctx.shadowBlur = nearBoundary ? 8 : 0;
+        ctx.beginPath();
+        ctx.moveTo(pBase.x, pBase.y);
+        ctx.lineTo(pTop.x, pTop.y);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+    }
+
+    // Holographic laser perimeter fence when approaching boundary
+    if (nearBoundary) {
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.45)';
+      ctx.lineWidth = 1.8;
+      for (let i = 0; i < 16; i++) {
+        const a1 = (i / 16) * Math.PI * 2;
+        const a2 = ((i + 1) / 16) * Math.PI * 2;
+        const p1 = project(Math.cos(a1) * 1200, Math.sin(a1) * 1200, 0);
+        const p2 = project(Math.cos(a2) * 1200, Math.sin(a2) * 1200, 0);
+        if (p1 && p2) {
+          ctx.beginPath();
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
+        }
+      }
+    }
   }
 
   drawSpeedStreamers(ctx, pitch, roll, speed, dt) {
@@ -380,7 +648,7 @@ class DogfightRenderer {
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 11px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(p.callsign, sx, sy - 18);
+        ctx.fillText(`[LV.${p.level || 1}] ${p.callsign}`, sx, sy - 18);
 
         ctx.fillStyle = '#38bdf8';
         ctx.font = '10px monospace';
@@ -472,16 +740,16 @@ class DogfightRenderer {
       // Overhead Callsign & HP Bar (counter-rotate so text remains level)
       ctx.rotate(-remoteRollRad * 0.7);
 
-      // Callsign
-      ctx.fillStyle = '#ffffff';
+      // Callsign with Level
+      ctx.fillStyle = (p.level >= 4) ? '#f59e0b' : '#ffffff';
       ctx.font = 'bold 11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(p.callsign, 0, -38);
+      ctx.fillText(`[LV.${p.level || 1}] ${p.callsign}`, 0, -38);
 
       // Mini HP Bar
       const barW = 44;
       const barH = 5;
-      const hpPct = Math.max(0, p.hp / 100);
+      const hpPct = Math.max(0, p.hp / (p.maxHp || 100));
       ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
       ctx.fillRect(-barW / 2, -34, barW, barH);
       ctx.fillStyle = hpPct > 0.5 ? '#10b981' : (hpPct > 0.25 ? '#f59e0b' : '#ef4444');
@@ -489,6 +757,26 @@ class DogfightRenderer {
       ctx.strokeStyle = '#38bdf8';
       ctx.lineWidth = 1;
       ctx.strokeRect(-barW / 2, -34, barW, barH);
+
+      // Energy Shield Bubble
+      if (p.hasShield) {
+        ctx.strokeStyle = '#38bdf8';
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.18)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, 36, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      // Damage Boost Energy Sparks
+      if (p.hasDamageBoost) {
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, 26 + Math.sin(now * 0.015) * 3, 0, Math.PI * 2);
+        ctx.stroke();
+      }
 
       // Distance tag
       ctx.fillStyle = '#38bdf8';
@@ -664,16 +952,20 @@ class DogfightRenderer {
     ctx.restore();
   }
 
-  drawTacticalRadar(ctx, myPlane, otherPlayers, now) {
+  drawTacticalRadar(ctx, myPlane, otherPlayers, items, now) {
     if (!myPlane) return;
     ctx.save();
 
     const rx = 855;
     const ry = 435;
     const radius = 75;
+    const maxRadarRange = 1200; // meters (Matches Combat Arena Radius!)
+    const myHRad = (myPlane.heading * Math.PI) / 180;
+    const curDist = Math.hypot(myPlane.x, myPlane.y);
+    const nearEdge = curDist > 950;
 
     // Scope background
-    ctx.fillStyle = 'rgba(7, 24, 38, 0.88)';
+    ctx.fillStyle = 'rgba(7, 24, 38, 0.9)';
     ctx.strokeStyle = '#38bdf8';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -681,12 +973,20 @@ class DogfightRenderer {
     ctx.fill();
     ctx.stroke();
 
-    // Range rings (500m & 1000m)
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
+    // 1. Combat Airspace Boundary Ring (Dashed Red at R = 1200m)
+    ctx.strokeStyle = nearEdge ? (Math.sin(now * 0.01) > 0 ? '#ef4444' : '#f59e0b') : 'rgba(239, 68, 68, 0.7)';
+    ctx.lineWidth = nearEdge ? 2.2 : 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.arc(rx, ry, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 2. Range 600m inner ring
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.22)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(rx, ry, radius * 0.4, 0, Math.PI * 2);
-    ctx.arc(rx, ry, radius * 0.75, 0, Math.PI * 2);
+    ctx.arc(rx, ry, radius * 0.5, 0, Math.PI * 2);
     ctx.stroke();
 
     // Crosshairs
@@ -707,7 +1007,81 @@ class DogfightRenderer {
     ctx.closePath();
     ctx.fill();
 
-    // Center dot: Own Aircraft (White triangle pointing straight UP)
+    // Helper: Map world point to radar coordinates
+    const toRadar = (wx, wy) => {
+      const dx = wx - myPlane.x;
+      const dy = wy - myPlane.y;
+      const dist = Math.hypot(dx, dy);
+      const relAng = Math.atan2(dx, dy) - myHRad;
+      const rDist = Math.min(radius - 4, (dist / maxRadarRange) * radius);
+      return { x: rx + Math.sin(relAng) * rDist, y: ry - Math.cos(relAng) * rDist, inRange: dist <= maxRadarRange };
+    };
+
+    // 3. Central Airbase Runway Icon at (0, 0)
+    const pAir = toRadar(0, 0);
+    if (pAir.inRange) {
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(pAir.x - 1.5, pAir.y - 7, 3, 14); // Runway stripe
+      ctx.fillStyle = '#10b981';
+      ctx.fillRect(pAir.x - 4, pAir.y - 1, 8, 2);
+    }
+
+    // 4. Mountains on Radar (▲)
+    const radarMtn = [
+      { x: 0, y: 780 }, { x: 0, y: -780 }, { x: 780, y: 0 }, { x: -780, y: 0 },
+      { x: 380, y: 380 }, { x: -380, y: 360 }, { x: 360, y: -380 }, { x: -360, y: -380 }
+    ];
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 8px monospace';
+    ctx.textAlign = 'center';
+    for (let m of radarMtn) {
+      const pm = toRadar(m.x, m.y);
+      if (pm.inRange) {
+        ctx.fillText('▲', pm.x, pm.y + 3);
+      }
+    }
+
+    // 5. Waypoints on Radar (A, B, C, D)
+    const radarWp = [
+      { x: 620, y: 620, label: 'A', col: '#38bdf8' },
+      { x: 620, y: -620, label: 'B', col: '#10b981' },
+      { x: -620, y: -620, label: 'C', col: '#f59e0b' },
+      { x: -620, y: 620, label: 'D', col: '#a855f7' }
+    ];
+    for (let wp of radarWp) {
+      const pw = toRadar(wp.x, wp.y);
+      if (pw.inRange) {
+        ctx.fillStyle = wp.col;
+        ctx.fillText(wp.label, pw.x, pw.y + 3);
+      }
+    }
+
+    // 5.5. Tactical Collectible Items on Radar (✚ Medkit, ⚡ Damage Boost, 🛡 Shield)
+    if (items && Array.isArray(items)) {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let it of items) {
+        const pit = toRadar(it.x, it.y);
+        if (pit.inRange) {
+          if (it.type === 'medkit') {
+            ctx.fillStyle = '#10b981';
+            ctx.font = 'bold 11px monospace';
+            ctx.fillText('✚', pit.x, pit.y);
+          } else if (it.type === 'damage_boost') {
+            ctx.fillStyle = '#f59e0b';
+            ctx.font = 'bold 12px monospace';
+            ctx.fillText('⚡', pit.x, pit.y);
+          } else if (it.type === 'shield') {
+            ctx.fillStyle = '#38bdf8';
+            ctx.font = 'bold 11px monospace';
+            ctx.fillText('🛡', pit.x, pit.y);
+          }
+        }
+      }
+      ctx.textBaseline = 'alphabetic';
+    }
+
+    // 6. Center dot: Own Aircraft (White arrowhead)
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
     ctx.moveTo(rx, ry - 6);
@@ -716,31 +1090,18 @@ class DogfightRenderer {
     ctx.closePath();
     ctx.fill();
 
-    // Draw all active remote pilots
-    const maxRadarRange = 1200; // meters
-    const myHRad = (myPlane.heading * Math.PI) / 180;
-
+    // 7. Draw all active remote pilots
     if (otherPlayers) {
       for (let p of otherPlayers) {
         if (p.isDead) continue;
-        const dx = p.x - myPlane.x;
-        const dy = p.y - myPlane.y;
-        const dist = Math.hypot(dx, dy);
-
-        // Body relative angle: 0 = straight ahead
-        const worldAngle = Math.atan2(dx, dy);
-        const relAngle = worldAngle - myHRad;
-
-        const radarDist = Math.min(radius - 5, (dist / maxRadarRange) * radius);
-        const bx = rx + Math.sin(relAngle) * radarDist;
-        const by = ry - Math.cos(relAngle) * radarDist;
+        const pp = toRadar(p.x, p.y);
 
         // Player Blip
         ctx.fillStyle = p.isLocked ? '#ef4444' : (p.color || '#38bdf8');
         ctx.shadowColor = ctx.fillStyle;
         ctx.shadowBlur = 6;
         ctx.beginPath();
-        ctx.arc(bx, by, 3.5, 0, Math.PI * 2);
+        ctx.arc(pp.x, pp.y, 3.5, 0, Math.PI * 2);
         ctx.fill();
 
         // Direction pointer
@@ -748,17 +1109,55 @@ class DogfightRenderer {
         ctx.strokeStyle = ctx.fillStyle;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(bx, by);
-        ctx.lineTo(bx + Math.sin(pRelHeading) * 7, by - Math.cos(pRelHeading) * 7);
+        ctx.moveTo(pp.x, pp.y);
+        ctx.lineTo(pp.x + Math.sin(pRelHeading) * 7, pp.y - Math.cos(pRelHeading) * 7);
         ctx.stroke();
       }
     }
 
-    // Label
-    ctx.fillStyle = '#38bdf8';
+    // Label & Distance readout
+    ctx.fillStyle = nearEdge ? '#ef4444' : '#38bdf8';
     ctx.font = 'bold 9px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('TACTICAL 360°', rx, ry + radius + 12);
+    ctx.fillText(`ARENA 1200m • CTR:${Math.round(curDist)}m`, rx, ry + radius + 13);
+
+    ctx.restore();
+  }
+
+  drawBoundaryAlertHUD(ctx, distFromCenter, boundaryState, boundaryTimeRem, now) {
+    ctx.save();
+    const cx = 480;
+
+    if (boundaryState === 'danger') {
+      // Red Flashing Danger Box
+      const pulse = Math.sin(now * 0.012) > 0;
+      ctx.fillStyle = pulse ? 'rgba(239, 68, 68, 0.88)' : 'rgba(153, 27, 27, 0.88)';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.fillRect(cx - 240, 75, 480, 48);
+      ctx.strokeRect(cx - 240, 75, 480, 48);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 15px monospace';
+      ctx.textAlign = 'center';
+      const secText = (boundaryTimeRem || 5).toFixed(1);
+      ctx.fillText(`🚨 OUT OF BOUNDS! RETURN TO ARENA IN ${secText}s`, cx, 98);
+      ctx.font = '11px monospace';
+      ctx.fillText('AUTOPILOT BANKING TOWARDS BATTLEFIELD CENTER', cx, 114);
+    } else if (boundaryState === 'caution') {
+      // Amber Caution Banner
+      const remDist = Math.max(0, Math.round(1200 - distFromCenter));
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.85)';
+      ctx.strokeStyle = '#fef3c7';
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(cx - 180, 75, 360, 36);
+      ctx.strokeRect(cx - 180, 75, 360, 36);
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 12px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`⚠️ CAUTION: BOUNDARY EDGE IN ${remDist}m`, cx, 98);
+    }
 
     ctx.restore();
   }
@@ -865,11 +1264,306 @@ class DogfightRenderer {
     ctx.restore();
   }
 
-  drawCockpitFrame(ctx) {
+  draw3DItems(ctx, items, myPlane, pitch, roll, now) {
+    if (!items || !items.length || !myPlane) return;
+
+    const headingRad = (myPlane.heading * Math.PI) / 180;
+    const sinH = Math.sin(headingRad);
+    const cosH = Math.cos(headingRad);
+    const pitchOffset = (pitch || 0) * 12;
+
+    for (let it of items) {
+      const dx = it.x - myPlane.x;
+      const dy = it.y - myPlane.y;
+      const dAlt = (it.alt - myPlane.alt) * 8.0;
+
+      const relZ = dx * sinH + dy * cosH;
+      const relX = dx * cosH - dy * sinH;
+      const relY = dAlt;
+
+      const dist = Math.hypot(dx, dy);
+      if (relZ <= 10) continue; // Behind player
+
+      const fx = 620;
+      const fy = 620;
+      const sx = 480 + (relX / Math.max(20, relZ)) * fx;
+      const sy = 270 - (relY / Math.max(20, relZ)) * fy + pitchOffset;
+
+      if (sx < -60 || sx > this.width + 60 || sy < -60 || sy > this.height + 60) continue;
+
+      ctx.save();
+      const scale = Math.min(2.2, Math.max(0.55, 300 / Math.max(30, dist)));
+      const pulse = 1.0 + Math.sin(now * 0.006 + it.x) * 0.15;
+      const rot = (now * 0.002) % (Math.PI * 2);
+
+      let colMain = '#10b981';
+      let colGlow = 'rgba(16, 185, 129, 0.35)';
+      let icon = '✚';
+      let title = 'MEDKIT +50HP';
+
+      if (it.type === 'damage_boost') {
+        colMain = '#f59e0b';
+        colGlow = 'rgba(245, 158, 11, 0.35)';
+        icon = '⚡';
+        title = 'DAMAGE BOOST 2x';
+      } else if (it.type === 'shield') {
+        colMain = '#38bdf8';
+        colGlow = 'rgba(56, 189, 248, 0.35)';
+        icon = '🛡️';
+        title = 'ENERGY SHIELD';
+      }
+
+      // Vertical beacon beam
+      const grad = ctx.createLinearGradient(sx, sy - 90 * scale, sx, sy + 30 * scale);
+      grad.addColorStop(0, 'rgba(255, 255, 255, 0)');
+      grad.addColorStop(0.5, colGlow);
+      grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(sx - 3 * scale, sy - 90 * scale, 6 * scale, 120 * scale);
+
+      // Rotating holographic ring
+      ctx.strokeStyle = colMain;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, 18 * scale * pulse, 6 * scale * pulse, rot, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Supply crate / energy container box
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+      ctx.strokeStyle = colMain;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = colMain;
+      ctx.shadowBlur = 10;
+      const boxSize = 14 * scale * pulse;
+      ctx.fillRect(sx - boxSize / 2, sy - boxSize / 2, boxSize, boxSize);
+      ctx.strokeRect(sx - boxSize / 2, sy - boxSize / 2, boxSize, boxSize);
+
+      // Icon inside box
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = colMain;
+      ctx.font = `bold ${Math.round(11 * scale)}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(icon, sx, sy);
+
+      // Overhead Tag & Distance
+      ctx.font = 'bold 10px monospace';
+      ctx.fillStyle = colMain;
+      ctx.fillText(`[${title}]`, sx, sy - 20 * scale);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '9px monospace';
+      ctx.fillText(`${Math.round(dist)}m`, sx, sy + 22 * scale);
+
+      ctx.restore();
+    }
+  }
+
+  drawTerrainWarningHUD(ctx, terrainDist, now) {
     ctx.save();
-    ctx.strokeStyle = 'rgba(15, 23, 42, 0.6)';
-    ctx.lineWidth = 6;
+    const isFlashing = Math.sin(now * 0.015) > 0;
+    ctx.fillStyle = isFlashing ? 'rgba(239, 68, 68, 0.85)' : 'rgba(185, 28, 28, 0.85)';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2.5;
+
+    const w = 400;
+    const h = 50;
+    const x = 480 - w / 2;
+    const y = 350;
+
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = '#000000';
+    ctx.shadowBlur = 6;
+    ctx.fillText('⚠️ PULL UP! TERRAIN AHEAD!', 480, y + 23);
+
+    ctx.font = 'bold 11px monospace';
+    ctx.fillStyle = '#fef08a';
+    ctx.fillText(`CLEARANCE CRITICAL • DISTANCE: ${Math.round(terrainDist || 0)}m`, 480, y + 41);
+
+    ctx.restore();
+  }
+
+  drawCockpitFrame(ctx, myPlane, pitch, roll, now, isFiring) {
+    ctx.save();
+
+    const cx = 480;
+    const skinColor = (myPlane && myPlane.color) ? myPlane.color : '#38bdf8';
+    const rollTilt = (roll || 0) * -0.0025; // G-force cockpit inertia lag
+    const pitchShift = (pitch || 0) * 1.5;
+
+    // 1. Sleek 1st-Person Fighter Jet Nose Cone (Extending forward from bottom center)
+    ctx.save();
+    ctx.translate(cx, 540);
+    ctx.rotate(rollTilt);
+    ctx.translate(-cx, -540);
+
+    const apexX = cx;
+    const apexY = 445 + pitchShift; // Nose radome tip
+
+    // Radome body polygon
+    ctx.beginPath();
+    ctx.moveTo(apexX, apexY); // Tip of nose cone
+    ctx.quadraticCurveTo(cx - 50, 480 + pitchShift, cx - 110, 540); // Left chine
+    ctx.lineTo(cx + 110, 540); // Base across cockpit sill
+    ctx.quadraticCurveTo(cx + 50, 480 + pitchShift, apexX, apexY); // Right chine
+    ctx.closePath();
+
+    // Metallic jet gradient livery
+    const noseGrad = ctx.createLinearGradient(cx - 110, 0, cx + 110, 0);
+    noseGrad.addColorStop(0, '#0f172a');
+    noseGrad.addColorStop(0.2, '#1e293b');
+    noseGrad.addColorStop(0.45, skinColor);
+    noseGrad.addColorStop(0.55, '#ffffff'); // Light reflection ridge
+    noseGrad.addColorStop(0.7, skinColor);
+    noseGrad.addColorStop(1, '#0f172a');
+    ctx.fillStyle = noseGrad;
+    ctx.fill();
+
+    // Darker radome composite cap at tip
+    ctx.beginPath();
+    ctx.moveTo(apexX, apexY);
+    ctx.lineTo(cx - 22, apexY + 32);
+    ctx.lineTo(cx + 22, apexY + 32);
+    ctx.closePath();
+    ctx.fillStyle = '#0f172a';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Pitot tube needle protruding from apex
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(apexX, apexY);
+    ctx.lineTo(apexX, apexY - 14);
+    ctx.stroke();
+
+    // Nose centerline & panel grooves
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(apexX, apexY + 32);
+    ctx.lineTo(cx, 540);
+    ctx.stroke();
+
+    // Twin 20mm M61 Vulcan Gun Port Fairings (Left & Right)
+    const gunY = 490 + pitchShift;
+    [-46, 46].forEach((gx) => {
+      ctx.fillStyle = '#09101d';
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(cx + gx, gunY, 5, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Muzzle flash when firing!
+      if (isFiring) {
+        ctx.fillStyle = '#fbbf24';
+        ctx.shadowColor = '#f59e0b';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.moveTo(cx + gx, gunY - 18);
+        ctx.lineTo(cx + gx - 7, gunY - 3);
+        ctx.lineTo(cx + gx, gunY);
+        ctx.lineTo(cx + gx + 7, gunY - 3);
+        ctx.closePath();
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+    });
+
+    ctx.restore();
+
+    // 2. Cockpit Glare Shield & Instrument Coaming (Bottom Sill)
+    ctx.fillStyle = '#060d17';
+    ctx.beginPath();
+    ctx.moveTo(0, 540);
+    ctx.lineTo(0, 505);
+    ctx.quadraticCurveTo(cx, 480, 960, 505);
+    ctx.lineTo(960, 540);
+    ctx.closePath();
+    ctx.fill();
+
+    // Top sill bevel highlight
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(0, 505);
+    ctx.quadraticCurveTo(cx, 480, 960, 505);
+    ctx.stroke();
+
+    // HUD Glass Projector Base
+    ctx.fillStyle = '#0a1424';
+    ctx.fillRect(cx - 90, 482, 180, 14);
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(cx - 90, 482, 180, 14);
+
+    // Green projector lens glow
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.35)';
+    ctx.fillRect(cx - 70, 485, 140, 8);
+
+    // 3. Canopy Frame (A-Pillars & Arched Windshield Bow)
+    const pillarGrad = ctx.createLinearGradient(0, 0, 60, 0);
+    pillarGrad.addColorStop(0, '#040911');
+    pillarGrad.addColorStop(0.5, '#0f172a');
+    pillarGrad.addColorStop(1, '#1e293b');
+
+    // Left A-Pillar Strut
+    ctx.fillStyle = pillarGrad;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(55, 0);
+    ctx.lineTo(40, 505);
+    ctx.lineTo(0, 540);
+    ctx.closePath();
+    ctx.fill();
+
+    // Right A-Pillar Strut
+    ctx.fillStyle = pillarGrad;
+    ctx.beginPath();
+    ctx.moveTo(960, 0);
+    ctx.lineTo(905, 0);
+    ctx.lineTo(920, 505);
+    ctx.lineTo(960, 540);
+    ctx.closePath();
+    ctx.fill();
+
+    // Top Canopy Arch Header
+    ctx.fillStyle = '#060d17';
+    ctx.fillRect(0, 0, 960, 14);
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 14);
+    ctx.lineTo(960, 14);
+    ctx.stroke();
+
+    // Left & Right Rearview Mirrors (Top Gun Fighter Jet signature!)
+    [ { x: 135, y: 14 }, { x: 825, y: 14 } ].forEach((m) => {
+      ctx.fillStyle = '#09101d';
+      ctx.strokeStyle = '#475569';
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(m.x - 22, m.y, 44, 20);
+      ctx.strokeRect(m.x - 22, m.y, 44, 20);
+      // Sky/earth mirror reflection
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
+      ctx.fillRect(m.x - 20, m.y + 2, 40, 9);
+      ctx.fillStyle = 'rgba(30, 41, 59, 0.4)';
+      ctx.fillRect(m.x - 20, m.y + 11, 40, 7);
+    });
+
+    // 4. Subtle Outer Bezel
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.7)';
+    ctx.lineWidth = 5;
     ctx.strokeRect(0, 0, this.width, this.height);
+
     ctx.restore();
   }
 }

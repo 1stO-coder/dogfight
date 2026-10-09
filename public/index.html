@@ -16,9 +16,11 @@
       <!-- Top Telemetry Bar -->
       <div class="hud-top-bar">
         <div class="hud-pill">
-          <span id="hud-room-code" class="hud-room-tag">ROOM: SKY-1</span>
-          <button id="btn-copy-link" class="btn-mini-hud">🔗 Share Link</button>
+          <span id="hud-room-code" class="hud-room-tag">ARENA (1200m)</span>
+          <span id="hud-level-badge" class="hud-level-tag">⭐ LV. 1 ROOKIE</span>
           <span id="hud-shield-badge" class="hud-shield-badge" style="display: none;">🛡️ SHIELD ACTIVE</span>
+          <span id="hud-dmg-badge" class="hud-dmg-badge" style="display: none;">⚡ 2X DMG ACTIVE</span>
+          <button id="btn-copy-link" class="btn-mini-hud">🔗 Share Link</button>
         </div>
 
         <div class="hud-pill">
@@ -45,6 +47,7 @@
     <div id="overlay-death" style="display: none;">
       <div class="death-title">AIRCRAFT DESTROYED</div>
       <div class="death-subtitle">Shot down by <strong id="death-killer-name">Enemy Ace</strong></div>
+      <div class="death-reset-badge">⚠️ LEVEL RESET TO LV.1</div>
       <div class="respawn-timer-box">
         <span>RESPAWNING IN</span>
         <span id="respawn-countdown" class="num">3</span>
@@ -64,6 +67,7 @@
             <tr>
               <th style="width: 50px;">RANK</th>
               <th>CALLSIGN</th>
+              <th class="num" style="width: 70px;">LEVEL</th>
               <th class="num" style="width: 70px;">KILLS</th>
               <th class="num" style="width: 70px;">DEATHS</th>
               <th class="num" style="width: 90px;">SCORE</th>
@@ -85,6 +89,8 @@
           <p>Tactical Multiplayer Air Combat • 10-Pilot Free-For-All</p>
         </div>
 
+        <div id="lobby-error-msg" class="lobby-error-banner" style="display: none;"></div>
+
         <div class="form-group">
           <label>PILOT CALLSIGN (ชื่อนักบิน)</label>
           <input type="text" id="input-callsign" class="input-tactical" placeholder="Maverick" maxlength="15" value="Maverick">
@@ -99,14 +105,6 @@
             <button class="color-choice" data-color="#10b981" style="background:#10b981;" title="Emerald Green"></button>
             <button class="color-choice" data-color="#a855f7" style="background:#a855f7;" title="Phantom Purple"></button>
             <button class="color-choice" data-color="#cbd5e1" style="background:#cbd5e1;" title="Stealth Silver"></button>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label>ROOM CODE (รหัสห้อง)</label>
-          <div class="form-row">
-            <input type="text" id="input-room" class="input-tactical" placeholder="SKY-1" maxlength="10" value="SKY-1">
-            <button id="btn-create" class="btn-secondary-action">สุ่มรหัสห้องใหม่</button>
           </div>
         </div>
 
