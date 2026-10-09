@@ -244,9 +244,8 @@ class DogfightRenderer {
     ctx.restore();
   }
 
-  projectCameraSpace(wx, wy, wz, myPlane, pitch, roll) {
-    if (!myPlane) return null;
-    const hRad = (myPlane.heading * Math.PI) / 180;
+  getCameraBasis(heading, pitch, roll) {
+    const hRad = ((heading || 0) * Math.PI) / 180;
     const pRad = (((pitch || 0) % 360) * Math.PI) / 180;
     const rRad = ((roll || 0) * Math.PI) / 180;
 
@@ -254,13 +253,24 @@ class DogfightRenderer {
     const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
     const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
 
-    const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
+    const Fx = sinH * cosP;
+    const Fy = cosH * cosP;
+    const Fz = sinP;
+
     const Rx = cosH * cosR + sinH * sinP * sinR;
     const Ry = -sinH * cosR + cosH * sinP * sinR;
     const Rz = -cosP * sinR;
-    const Ux = -cosH * sinR + sinH * sinP * cosR;
-    const Uy = sinH * sinR + cosH * sinP * cosR;
+
+    const Ux = cosH * sinR - sinH * sinP * cosR;
+    const Uy = -sinH * sinR - cosH * sinP * cosR;
     const Uz = cosP * cosR;
+
+    return { Fx, Fy, Fz, Rx, Ry, Rz, Ux, Uy, Uz };
+  }
+
+  projectCameraSpace(wx, wy, wz, myPlane, pitch, roll) {
+    if (!myPlane) return null;
+    const { Fx, Fy, Fz, Rx, Ry, Rz, Ux, Uy, Uz } = this.getCameraBasis(myPlane.heading, pitch, roll);
 
     const dx = wx - myPlane.x;
     const dy = wy - myPlane.y;
@@ -319,45 +329,52 @@ class DogfightRenderer {
     const rollRad = ((roll || 0) * Math.PI) / 180;
 
     const isInverted = normPitch > 90 && normPitch < 270;
-    let pitchOffset;
+    let effPitch;
     if (normPitch <= 90) {
-      pitchOffset = normPitch * 5.0;
+      effPitch = normPitch;
     } else if (normPitch <= 270) {
-      pitchOffset = (180 - normPitch) * 5.0;
+      effPitch = 180 - normPitch;
     } else {
-      pitchOffset = (normPitch - 360) * 5.0;
+      effPitch = normPitch - 360;
     }
 
-    ctx.translate(cx, cy + pitchOffset);
+    // Exact mathematical perspective pitch offset (matches project3D focal length f = 620)
+    // Clamp angle to ~82 deg to prevent tangent explosion near zenith/nadir
+    const effPitchRad = Math.max(-1.43, Math.min(1.43, (effPitch * Math.PI) / 180));
+    const pitchOffset = 620 * Math.tan(effPitchRad);
+
+    ctx.translate(cx, cy);
     if (isInverted) {
       ctx.rotate(Math.PI - rollRad);
     } else {
       ctx.rotate(-rollRad);
     }
+    // Shift along local pitch axis (subpixel match with 3D world projection)
+    ctx.translate(0, pitchOffset);
 
-    const extent = 2000;
+    const extent = 2600;
 
-    // Sky dome
+    // Sky dome (Atmospheric gradient)
     const skyGrad = ctx.createLinearGradient(0, -extent, 0, 0);
-    skyGrad.addColorStop(0, '#071829');
-    skyGrad.addColorStop(0.85, '#1e3a5f');
-    skyGrad.addColorStop(1, '#3b6f9e');
+    skyGrad.addColorStop(0, '#040d1a');
+    skyGrad.addColorStop(0.7, '#0f2942');
+    skyGrad.addColorStop(1, '#1e4870');
     ctx.fillStyle = skyGrad;
     ctx.fillRect(-extent, -extent, extent * 2, extent);
 
-    // Ground terrain dome
+    // Ground terrain dome (Natural terrain haze gradient)
     const groundGrad = ctx.createLinearGradient(0, 0, 0, extent);
-    groundGrad.addColorStop(0, '#102a1e');
-    groundGrad.addColorStop(0.25, '#0c2016');
-    groundGrad.addColorStop(1, '#050f0a');
+    groundGrad.addColorStop(0, '#0e2417');
+    groundGrad.addColorStop(0.3, '#09180f');
+    groundGrad.addColorStop(1, '#040c07');
     ctx.fillStyle = groundGrad;
     ctx.fillRect(-extent, 0, extent * 2, extent);
 
-    // Horizon line
-    ctx.strokeStyle = '#38bdf8';
+    // Horizon line (Atmospheric glow)
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
     ctx.lineWidth = 2.0;
-    ctx.shadowColor = 'rgba(56, 189, 248, 0.8)';
-    ctx.shadowBlur = 8;
+    ctx.shadowColor = 'rgba(56, 189, 248, 0.7)';
+    ctx.shadowBlur = 6;
     ctx.beginPath();
     ctx.moveTo(-extent, 0);
     ctx.lineTo(extent, 0);
@@ -366,52 +383,174 @@ class DogfightRenderer {
     ctx.restore();
   }
 
+  draw3DBox(ctx, cx, cy, w, d, h, colWall, colRoof, myPlane, pitch, roll) {
+    const hw = w * 0.5;
+    const hd = d * 0.5;
+
+    // 4 top corners at z = h
+    const t1 = this.project3D(cx - hw, cy - hd, h, myPlane, pitch, roll);
+    const t2 = this.project3D(cx + hw, cy - hd, h, myPlane, pitch, roll);
+    const t3 = this.project3D(cx + hw, cy + hd, h, myPlane, pitch, roll);
+    const t4 = this.project3D(cx - hw, cy + hd, h, myPlane, pitch, roll);
+
+    // 4 base corners at z = 0
+    const b1 = this.project3D(cx - hw, cy - hd, 0, myPlane, pitch, roll);
+    const b2 = this.project3D(cx + hw, cy - hd, 0, myPlane, pitch, roll);
+    const b3 = this.project3D(cx + hw, cy + hd, 0, myPlane, pitch, roll);
+    const b4 = this.project3D(cx - hw, cy + hd, 0, myPlane, pitch, roll);
+
+    if (!t1 || !t2 || !t3 || !t4) return;
+
+    // Front/Side Walls
+    if (b1 && b2) {
+      ctx.fillStyle = colWall;
+      ctx.beginPath();
+      ctx.moveTo(b1.x, b1.y); ctx.lineTo(b2.x, b2.y);
+      ctx.lineTo(t2.x, t2.y); ctx.lineTo(t1.x, t1.y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    if (b2 && b3) {
+      ctx.fillStyle = '#1e293b';
+      ctx.beginPath();
+      ctx.moveTo(b2.x, b2.y); ctx.lineTo(b3.x, b3.y);
+      ctx.lineTo(t3.x, t3.y); ctx.lineTo(t2.x, t2.y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    if (b4 && b1) {
+      ctx.fillStyle = '#1e293b';
+      ctx.beginPath();
+      ctx.moveTo(b4.x, b4.y); ctx.lineTo(b1.x, b1.y);
+      ctx.lineTo(t1.x, t1.y); ctx.lineTo(t4.x, t4.y);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Roof
+    ctx.fillStyle = colRoof;
+    ctx.beginPath();
+    ctx.moveTo(t1.x, t1.y);
+    ctx.lineTo(t2.x, t2.y);
+    ctx.lineTo(t3.x, t3.y);
+    ctx.lineTo(t4.x, t4.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#64748b';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
   draw3DWorldTerrain(ctx, myPlane, pitch, roll, now) {
     if (!myPlane) return;
 
-    // 1. Fixed 3D Ground Grid (Positioned at exact world coordinates)
+    // 1. 3D Checkerboard Sector Ground Tiles (Streaming Ground Texture with Visible Reference Points)
     ctx.save();
-    ctx.strokeStyle = 'rgba(52, 211, 153, 0.22)';
-    ctx.lineWidth = 1.2;
+    const tileSize = 120; // 120m per ground sector grid tile
+    const radius = 720;
+    const minGX = Math.floor((myPlane.x - radius) / tileSize) * tileSize;
+    const maxGX = Math.ceil((myPlane.x + radius) / tileSize) * tileSize;
+    const minGY = Math.floor((myPlane.y - radius) / tileSize) * tileSize;
+    const maxGY = Math.ceil((myPlane.y + radius) / tileSize) * tileSize;
 
-    const step = 150;
-    const span = 900;
-    const startX = Math.floor((myPlane.x - span) / step) * step;
-    const endX = Math.ceil((myPlane.x + span) / step) * step;
-    const startY = Math.floor((myPlane.y - span) / step) * step;
-    const endY = Math.ceil((myPlane.y + span) / step) * step;
+    for (let gx = minGX; gx < maxGX; gx += tileSize) {
+      for (let gy = minGY; gy < maxGY; gy += tileSize) {
+        const cdx = gx + tileSize * 0.5 - myPlane.x;
+        const cdy = gy + tileSize * 0.5 - myPlane.y;
+        if (cdx * cdx + cdy * cdy > 750 * 750) continue;
 
-    // Draw longitudinal grid lines (segmented for proper front clipping)
-    for (let gx = startX; gx <= endX; gx += step) {
-      for (let gy = startY; gy < endY; gy += 300) {
         const p1 = this.project3D(gx, gy, 0, myPlane, pitch, roll);
-        const p2 = this.project3D(gx, gy + 300, 0, myPlane, pitch, roll);
-        if (p1 && p2 && p1.z < 1200 && p2.z < 1200) {
+        const p2 = this.project3D(gx + tileSize, gy, 0, myPlane, pitch, roll);
+        const p3 = this.project3D(gx + tileSize, gy + tileSize, 0, myPlane, pitch, roll);
+        const p4 = this.project3D(gx, gy + tileSize, 0, myPlane, pitch, roll);
+
+        if (p1 && p2 && p3 && p4 && p1.z < 1000) {
+          const isEven = (Math.floor(gx / tileSize) + Math.floor(gy / tileSize)) % 2 === 0;
+          ctx.fillStyle = isEven ? '#0f2619' : '#0b1d13';
           ctx.beginPath();
           ctx.moveTo(p1.x, p1.y);
           ctx.lineTo(p2.x, p2.y);
-          ctx.stroke();
-        }
-      }
-    }
+          ctx.lineTo(p3.x, p3.y);
+          ctx.lineTo(p4.x, p4.y);
+          ctx.closePath();
+          ctx.fill();
 
-    // Draw lateral grid lines (segmented for proper front clipping)
-    for (let gy = startY; gy <= endY; gy += step) {
-      for (let gx = startX; gx < endX; gx += 300) {
-        const p1 = this.project3D(gx, gy, 0, myPlane, pitch, roll);
-        const p2 = this.project3D(gx + 300, gy, 0, myPlane, pitch, roll);
-        if (p1 && p2 && p1.z < 1200 && p2.z < 1200) {
-          ctx.beginPath();
-          ctx.moveTo(p1.x, p1.y);
-          ctx.lineTo(p2.x, p2.y);
+          ctx.strokeStyle = 'rgba(52, 211, 153, 0.12)';
+          ctx.lineWidth = 1.0;
           ctx.stroke();
         }
       }
     }
     ctx.restore();
 
-    // 2. Central Airbase Runway (wx: 0, wy: 0, length: 520, width: 64)
-    const rwL = 260;
+    // 2. Cross-Country Asphalt Highways (Route 01: N-S, Route 02: E-W)
+    ctx.save();
+    const roadW = 10; // 20m wide highway
+    const roadLen = 1180;
+
+    // Route 01 (North-South Highway along X = 0)
+    for (let y = -roadLen; y < roadLen; y += 160) {
+      const p1 = this.project3D(-roadW, y, 0, myPlane, pitch, roll);
+      const p2 = this.project3D(roadW, y, 0, myPlane, pitch, roll);
+      const p3 = this.project3D(roadW, y + 160, 0, myPlane, pitch, roll);
+      const p4 = this.project3D(-roadW, y + 160, 0, myPlane, pitch, roll);
+      if (p1 && p2 && p3 && p4) {
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.lineTo(p3.x, p3.y);
+        ctx.lineTo(p4.x, p4.y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Yellow dashed center line
+        const c1 = this.project3D(0, y + 25, 0, myPlane, pitch, roll);
+        const c2 = this.project3D(0, y + 135, 0, myPlane, pitch, roll);
+        if (c1 && c2) {
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(c1.x, c1.y);
+          ctx.lineTo(c2.x, c2.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Route 02 (East-West Highway along Y = 0)
+    for (let x = -roadLen; x < roadLen; x += 160) {
+      const p1 = this.project3D(x, -roadW, 0, myPlane, pitch, roll);
+      const p2 = this.project3D(x + 160, -roadW, 0, myPlane, pitch, roll);
+      const p3 = this.project3D(x + 160, roadW, 0, myPlane, pitch, roll);
+      const p4 = this.project3D(x, roadW, 0, myPlane, pitch, roll);
+      if (p1 && p2 && p3 && p4) {
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.lineTo(p3.x, p3.y);
+        ctx.lineTo(p4.x, p4.y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Yellow dashed center line
+        const c1 = this.project3D(x + 25, 0, 0, myPlane, pitch, roll);
+        const c2 = this.project3D(x + 135, 0, 0, myPlane, pitch, roll);
+        if (c1 && c2) {
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(c1.x, c1.y);
+          ctx.lineTo(c2.x, c2.y);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+
+    // 3. Central Airbase Runway Complex (wx: 0, wy: 0, length: 540, width: 64)
+    const rwL = 270;
     const rwW = 32;
     const pNW = this.project3D(-rwW, rwL, 0, myPlane, pitch, roll);
     const pNE = this.project3D(rwW, rwL, 0, myPlane, pitch, roll);
@@ -419,8 +558,9 @@ class DogfightRenderer {
     const pSW = this.project3D(-rwW, -rwL, 0, myPlane, pitch, roll);
 
     if (pNW && pNE && pSE && pSW) {
-      ctx.fillStyle = '#1e293b';
-      ctx.strokeStyle = '#475569';
+      // Main Runway Tarmac
+      ctx.fillStyle = '#0f172a';
+      ctx.strokeStyle = '#38bdf8';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(pNW.x, pNW.y);
@@ -431,13 +571,13 @@ class DogfightRenderer {
       ctx.fill();
       ctx.stroke();
 
-      // Centerline dashed stripes
+      // Centerline dashed white stripes
       ctx.strokeStyle = '#f8fafc';
       ctx.lineWidth = 2.0;
       ctx.beginPath();
-      for (let yOff = -220; yOff <= 220; yOff += 55) {
-        const p1 = this.project3D(0, yOff - 16, 0, myPlane, pitch, roll);
-        const p2 = this.project3D(0, yOff + 16, 0, myPlane, pitch, roll);
+      for (let yOff = -230; yOff <= 230; yOff += 50) {
+        const p1 = this.project3D(0, yOff - 15, 0, myPlane, pitch, roll);
+        const p2 = this.project3D(0, yOff + 15, 0, myPlane, pitch, roll);
         if (p1 && p2) {
           ctx.moveTo(p1.x, p1.y);
           ctx.lineTo(p2.x, p2.y);
@@ -445,12 +585,14 @@ class DogfightRenderer {
       }
       ctx.stroke();
 
-      // Runway threshold lights
+      // Runway threshold approach lights
       const lights = [
         { wx: -rwW, wy: rwL, col: '#10b981' },
         { wx: rwW, wy: rwL, col: '#10b981' },
+        { wx: 0, wy: rwL, col: '#10b981' },
         { wx: -rwW, wy: -rwL, col: '#ef4444' },
         { wx: rwW, wy: -rwL, col: '#ef4444' },
+        { wx: 0, wy: -rwL, col: '#ef4444' },
         { wx: -rwW, wy: 0, col: '#f59e0b' },
         { wx: rwW, wy: 0, col: '#f59e0b' },
       ];
@@ -459,9 +601,43 @@ class DogfightRenderer {
         if (pl) {
           ctx.fillStyle = l.col;
           ctx.beginPath();
-          ctx.arc(pl.x, pl.y, Math.max(2, 60 / (pl.z * 0.1)), 0, Math.PI * 2);
+          ctx.arc(pl.x, pl.y, Math.max(2, 50 / (pl.z * 0.1)), 0, Math.PI * 2);
           ctx.fill();
         }
+      }
+
+      // Airbase Apron Area (East side of runway)
+      const pAp1 = this.project3D(rwW, 80, 0, myPlane, pitch, roll);
+      const pAp2 = this.project3D(rwW + 70, 80, 0, myPlane, pitch, roll);
+      const pAp3 = this.project3D(rwW + 70, -80, 0, myPlane, pitch, roll);
+      const pAp4 = this.project3D(rwW, -80, 0, myPlane, pitch, roll);
+      if (pAp1 && pAp2 && pAp3 && pAp4) {
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.moveTo(pAp1.x, pAp1.y);
+        ctx.lineTo(pAp2.x, pAp2.y);
+        ctx.lineTo(pAp3.x, pAp3.y);
+        ctx.lineTo(pAp4.x, pAp4.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#475569';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      // 3D Airbase Hangar Building at (-80, 40)
+      this.draw3DBox(ctx, -80, 40, 50, 40, 20, '#334155', '#475569', myPlane, pitch, roll);
+
+      // 3D Airbase Control Tower at (80, 40)
+      this.draw3DBox(ctx, 80, 40, 16, 16, 36, '#1e293b', '#38bdf8', myPlane, pitch, roll);
+      // Rotating beacon on control tower
+      const pTowerTop = this.project3D(80, 40, 38, myPlane, pitch, roll);
+      if (pTowerTop) {
+        const bFlash = (now % 600 < 300) ? '#10b981' : '#ffffff';
+        ctx.fillStyle = bFlash;
+        ctx.beginPath();
+        ctx.arc(pTowerTop.x, pTowerTop.y, 4, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       // Airbase label
@@ -587,20 +763,41 @@ class DogfightRenderer {
       }
     }
 
-    // 4. 4 Sector Waypoint Beacons (Holographic Laser Beams)
+    // 4. 4 Sector Forward Operating Bases (Holographic Laser Beams + Ground Pads)
     const beacons = [
-      { name: 'WP-ALPHA', wx: 620, wy: 620, col: '#38bdf8' },
-      { name: 'WP-BRAVO', wx: 620, wy: -620, col: '#10b981' },
-      { name: 'WP-CHARLIE', wx: -620, wy: -620, col: '#f59e0b' },
-      { name: 'WP-DELTA', wx: -620, wy: 620, col: '#a855f7' },
+      { name: 'OUTPOST ALPHA', wx: 620, wy: 620, col: '#38bdf8', letter: 'A' },
+      { name: 'OUTPOST BRAVO', wx: 620, wy: -620, col: '#10b981', letter: 'B' },
+      { name: 'OUTPOST CHARLIE', wx: -620, wy: -620, col: '#f59e0b', letter: 'C' },
+      { name: 'OUTPOST DELTA', wx: -620, wy: 620, col: '#a855f7', letter: 'D' },
     ];
 
     for (let b of beacons) {
       const pBase = this.project3D(b.wx, b.wy, 0, myPlane, pitch, roll);
       const pTop = this.project3D(b.wx, b.wy, 320, myPlane, pitch, roll);
-      if (pBase && pTop) {
+      if (pBase) {
+        // Hexagonal / Circular Ground Helipad
+        const rad = Math.max(4, (36 * 620) / Math.max(16, pBase.z));
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
         ctx.strokeStyle = b.col;
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.arc(pBase.x, pBase.y, rad, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Sector Letter on pad
+        if (pBase.z < 850) {
+          ctx.fillStyle = b.col;
+          ctx.font = `bold ${Math.max(9, Math.round(rad * 0.9))}px monospace`;
+          ctx.textAlign = 'center';
+          ctx.fillText(b.letter, pBase.x, pBase.y + rad * 0.35);
+        }
+      }
+
+      if (pBase && pTop) {
+        // Sky-piercing Holographic Laser Beam
+        ctx.strokeStyle = b.col;
+        ctx.lineWidth = Math.max(1.8, Math.min(5.0, 160 / Math.max(20, pBase.z * 0.1)));
         ctx.shadowColor = b.col;
         ctx.shadowBlur = 10;
         ctx.beginPath();
@@ -609,17 +806,13 @@ class DogfightRenderer {
         ctx.stroke();
         ctx.shadowBlur = 0;
 
-        ctx.strokeStyle = b.col;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(pBase.x, pBase.y, Math.max(3, 420 / pBase.z), 0, Math.PI * 2);
-        ctx.stroke();
-
         const dist = Math.hypot(b.wx - myPlane.x, b.wy - myPlane.y);
-        ctx.fillStyle = b.col;
-        ctx.font = 'bold 10px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(`◇ ${b.name} (${Math.round(dist)}m)`, pBase.x, pBase.y - 14);
+        if (pBase.z < 1100) {
+          ctx.fillStyle = b.col;
+          ctx.font = 'bold 10px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`▲ ${b.name} (${Math.round(dist)}m)`, pBase.x, pBase.y - 14);
+        }
       }
     }
 
@@ -782,21 +975,7 @@ class DogfightRenderer {
 
   drawOtherAircraft(ctx, otherPlayers, myPlane, pitch, roll, now) {
     if (!myPlane) return;
-    const hRad = (myPlane.heading * Math.PI) / 180;
-    const pRad = ((pitch || 0) * Math.PI) / 180;
-    const rRad = ((roll || 0) * Math.PI) / 180;
-
-    const sinH = Math.sin(hRad), cosH = Math.cos(hRad);
-    const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
-    const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
-
-    const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
-    const Rx = cosH * cosR + sinH * sinP * sinR;
-    const Ry = -sinH * cosR + cosH * sinP * sinR;
-    const Rz = -cosP * sinR;
-    const Ux = -cosH * sinR + sinH * sinP * cosR;
-    const Uy = sinH * sinR + cosH * sinP * cosR;
-    const Uz = cosP * cosR;
+    const { Fx, Fy, Fz, Rx, Ry, Rz, Ux, Uy, Uz } = this.getCameraBasis(myPlane.heading, pitch, roll);
 
     for (let p of otherPlayers) {
       if (p.isDead) {
@@ -1772,21 +1951,7 @@ class DogfightRenderer {
   draw3DItems(ctx, items, myPlane, pitch, roll, now) {
     if (!items || !items.length || !myPlane) return;
 
-    const hRad = (myPlane.heading * Math.PI) / 180;
-    const pRad = ((pitch || 0) * Math.PI) / 180;
-    const rRad = ((roll || 0) * Math.PI) / 180;
-
-    const sinH = Math.sin(hRad), cosH = Math.cos(hRad);
-    const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
-    const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
-
-    const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
-    const Rx = cosH * cosR + sinH * sinP * sinR;
-    const Ry = -sinH * cosR + cosH * sinP * sinR;
-    const Rz = -cosP * sinR;
-    const Ux = -cosH * sinR + sinH * sinP * cosR;
-    const Uy = sinH * sinR + cosH * sinP * cosR;
-    const Uz = cosP * cosR;
+    const { Fx, Fy, Fz, Rx, Ry, Rz, Ux, Uy, Uz } = this.getCameraBasis(myPlane.heading, pitch, roll);
 
     for (let it of items) {
       const dx = it.x - myPlane.x;

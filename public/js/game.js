@@ -529,8 +529,8 @@ class DogfightGame {
       const Rx = cosH * cosR + sinH * sinP * sinR;
       const Ry = -sinH * cosR + cosH * sinP * sinR;
       const Rz = -cosP * sinR;
-      const Ux = -cosH * sinR + sinH * sinP * cosR;
-      const Uy = sinH * sinR + cosH * sinP * cosR;
+      const Ux = cosH * sinR - sinH * sinP * cosR;
+      const Uy = -sinH * sinR - cosH * sinP * cosR;
       const Uz = cosP * cosR;
 
       let bestScore = Infinity;
