@@ -30,19 +30,31 @@ mimetypes.add_type("image/svg+xml", ".svg")
 import math
 from typing import Optional
 
-# Shared Battlefield Terrain Mountains (Must fly around/above!)
+# Shared Battlefield Terrain Mountains (14 Dispersed Natural Peaks across all quadrants)
 MOUNTAINS = [
-    # 4 Outer Perimeter Peaks
-    {"name": "MT. TITAN", "x": 0.0, "y": 780.0, "r": 260.0, "h": 140.0},
-    {"name": "SOUTH CRAG", "x": 0.0, "y": -780.0, "r": 260.0, "h": 135.0},
-    {"name": "TWIN PEAKS", "x": 780.0, "y": 0.0, "r": 270.0, "h": 140.0},
-    {"name": "IRON CLIFF", "x": -780.0, "y": 0.0, "r": 270.0, "h": 140.0},
-    # 4 Mid-Field Tactical Peaks (Dogfight engagement zone, 88m - 95m elevation!)
-    {"name": "EAGLE'S PILLAR", "x": 380.0, "y": 380.0, "r": 180.0, "h": 95.0},
-    {"name": "DRAGON'S TOOTH", "x": -380.0, "y": 360.0, "r": 170.0, "h": 90.0},
-    {"name": "OBSIDIAN RIDGE", "x": 360.0, "y": -380.0, "r": 180.0, "h": 92.0},
-    {"name": "VIPER PEAK", "x": -360.0, "y": -380.0, "r": 170.0, "h": 88.0},
+    # Sector 1: North & North-East
+    {"name": "MT. TITAN (N)", "x": 50.0, "y": 880.0, "r": 230.0, "h": 120.0},
+    {"name": "PINNACLE POINT (NE)", "x": 640.0, "y": 680.0, "r": 200.0, "h": 105.0},
+    {"name": "EAGLE'S ROOST", "x": 340.0, "y": 320.0, "r": 160.0, "h": 80.0},
+
+    # Sector 2: East & South-East
+    {"name": "TWIN PEAKS (E)", "x": 900.0, "y": -50.0, "r": 220.0, "h": 115.0},
+    {"name": "IRON CRAG (SE)", "x": 580.0, "y": -380.0, "r": 190.0, "h": 95.0},
+    {"name": "SOUTHERN SPUR (SE-Far)", "x": 480.0, "y": -820.0, "r": 190.0, "h": 100.0},
+
+    # Sector 3: South & South-West
+    {"name": "SOUTH CRAG (S)", "x": -80.0, "y": -880.0, "r": 230.0, "h": 120.0},
+    {"name": "VIPER RIDGE", "x": 80.0, "y": -420.0, "r": 150.0, "h": 75.0},
+    {"name": "DEADMAN'S BLUFF (SW)", "x": -560.0, "y": -420.0, "r": 190.0, "h": 98.0},
+    {"name": "OBSIDIAN MASSIF (SW-Far)", "x": -620.0, "y": -780.0, "r": 210.0, "h": 110.0},
+
+    # Sector 4: West & North-West
+    {"name": "IRON CLIFF (W)", "x": -900.0, "y": 40.0, "r": 220.0, "h": 115.0},
+    {"name": "DRAGON'S CREST (NW)", "x": -540.0, "y": 440.0, "r": 190.0, "h": 95.0},
+    {"name": "THUNDER RIDGE", "x": -320.0, "y": 280.0, "r": 150.0, "h": 75.0},
+    {"name": "FROST PEAK (NW-Far)", "x": -420.0, "y": 840.0, "r": 200.0, "h": 105.0},
 ]
+
 
 def get_terrain_height(x: float, y: float) -> float:
     """Calculate highest mountain elevation at (x, y) coordinates"""
@@ -54,6 +66,21 @@ def get_terrain_height(x: float, y: float) -> float:
             if h_here > max_h:
                 max_h = h_here
     return max_h
+
+
+def get_safe_spawn_point():
+    """Find safe coordinates in open airspace away from mountain peaks (ground_h < 5m)"""
+    for _ in range(50):
+        angle = random.random() * 2 * math.pi
+        dist = 240.0 + random.random() * 450.0
+        x = dist * math.cos(angle)
+        y = dist * math.sin(angle)
+        ground_h = get_terrain_height(x, y)
+        if ground_h < 5.0:
+            alt = 55.0 + random.random() * 20.0  # Safe cruising 55m - 75m
+            heading = (math.degrees(math.atan2(-x, -y)) + 360) % 360
+            return x, y, alt, heading
+    return 0.0, -100.0, 60.0, 0.0
 
 
 class Item:
@@ -82,14 +109,8 @@ class Player:
         self.color = color
         self.ws = ws
 
-        # Flight state: spawn inside combat arena (radius 350 - 750m)
-        angle = random.random() * 2 * math.pi
-        dist = 350 + random.random() * 400
-        self.x = dist * math.cos(angle)
-        self.y = dist * math.sin(angle)
-        self.alt = 50.0  # 0 to 100 cruising level
-        # Face toward center battlefield
-        self.heading = (math.degrees(math.atan2(-self.x, -self.y)) + 360) % 360
+        # Flight state: spawn in safe airspace away from mountain terrain
+        self.x, self.y, self.alt, self.heading = get_safe_spawn_point()
         self.pitch = 0.0
         self.roll = 0.0
         self.speed = 95.0
@@ -358,8 +379,8 @@ class GameServer:
 
                         # Mountain Terrain Collision Check
                         ground_h = get_terrain_height(player.x, player.y)
-                        if player.alt <= ground_h and not player.is_dead:
-                            now = time.time()
+                        now = time.time()
+                        if player.alt <= ground_h and not player.is_dead and now > player.shield_until:
                             player.hp = 0
                             player.is_dead = True
                             player.respawn_at = now + 3.0
@@ -418,6 +439,71 @@ class GameServer:
                             asyncio.create_task(respawn_task(current_room))
 
                         player.last_seen = time.time()
+                    continue
+
+                # 3.5. Direct Terrain Crash Event from Client
+                if msg_type == "crash":
+                    now = time.time()
+                    if not player.is_dead and now > player.shield_until:
+                        player.hp = 0
+                        player.is_dead = True
+                        player.respawn_at = now + 3.0
+                        player.deaths += 1
+                        player.level = 1
+                        player.max_hp = 100
+                        player.damage_boost_until = 0.0
+
+                        await current_room.broadcast(
+                            {
+                                "type": "player_killed",
+                                "victimId": player_id,
+                                "victimCallsign": player.callsign,
+                                "victimLevel": 1,
+                                "killerId": "terrain",
+                                "killerCallsign": "MOUNTAIN TERRAIN",
+                                "killerLevel": 0,
+                                "killerHp": 0,
+                                "killerMaxHp": 100,
+                                "hpReward": 0,
+                                "respawnIn": 3.0,
+                            }
+                        )
+                        print(f"[Crash Event] {player.callsign} crashed into mountain (Respawn in 3.0s)")
+                    continue
+
+                # 3.6. Respawn Request from Client Watchdog
+                if msg_type == "respawn_request":
+                    if player.is_dead:
+                        now = time.time()
+                        player.is_dead = False
+                        player.level = 1
+                        player.max_hp = 100
+                        player.hp = 100
+                        player.damage_boost_until = 0.0
+                        player.respawn_at = 0.0
+                        player.shield_until = now + 3.0
+                        x, y, alt, heading = get_safe_spawn_point()
+                        player.x = x
+                        player.y = y
+                        player.alt = alt
+                        player.heading = heading
+                        player.speed = 95.0
+
+                        await current_room.broadcast(
+                            {
+                                "type": "player_respawned",
+                                "playerId": player_id,
+                                "x": player.x,
+                                "y": player.y,
+                                "alt": player.alt,
+                                "heading": player.heading,
+                                "hp": player.hp,
+                                "maxHp": player.max_hp,
+                                "level": player.level,
+                                "shieldDuration": 3.0,
+                            }
+                        )
+                        print(f"[Respawn Request] {player.callsign} respawned safely at ({player.x:.1f}, {player.y:.1f}, alt={player.alt:.1f})")
                     continue
 
                 # 4. Fire Weapon
@@ -560,13 +646,8 @@ class GameServer:
                         p.damage_boost_until = 0.0
                         p.respawn_at = 0.0
                         p.shield_until = now + 3.0  # 3s invulnerability shield
-                        # Safe circular respawn inside arena facing center
-                        angle = random.random() * 2 * math.pi
-                        dist = 400 + random.random() * 350
-                        p.x = dist * math.cos(angle)
-                        p.y = dist * math.sin(angle)
-                        p.alt = 50.0 + (random.random() - 0.5) * 15.0
-                        p.heading = (math.degrees(math.atan2(-p.x, -p.y)) + 360) % 360
+                        p.x, p.y, p.alt, p.heading = get_safe_spawn_point()
+                        p.speed = 95.0
 
                         asyncio.create_task(
                             room.broadcast(

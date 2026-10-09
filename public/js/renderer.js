@@ -17,6 +17,31 @@
  * 7. Altimeter tape, Airspeed tape, Heading compass, and Cockpit Frame.
  */
 
+// Shared Dispersed Battlefield Mountain Terrain (14 Natural Peaks across all quadrants)
+window.DOGFIGHT_MOUNTAINS = [
+  // Sector 1: North & North-East
+  { name: 'MT. TITAN (N)', x: 50, y: 880, r: 230, h: 120, col: '#334155', snow: true },
+  { name: 'PINNACLE POINT (NE)', x: 640, y: 680, r: 200, h: 105, col: '#3b4252', snow: true },
+  { name: "EAGLE'S ROOST", x: 340, y: 320, r: 160, h: 80, col: '#2e3440', snow: false },
+
+  // Sector 2: East & South-East
+  { name: 'TWIN PEAKS (E)', x: 900, y: -50, r: 220, h: 115, col: '#334155', snow: true },
+  { name: 'IRON CRAG (SE)', x: 580, y: -380, r: 190, h: 95, col: '#3b4252', snow: false },
+  { name: 'SOUTHERN SPUR (SE-Far)', x: 480, y: -820, r: 190, h: 100, col: '#2e3440', snow: false },
+
+  // Sector 3: South & South-West
+  { name: 'SOUTH CRAG (S)', x: -80, y: -880, r: 230, h: 120, col: '#334155', snow: false },
+  { name: 'VIPER RIDGE', x: 80, y: -420, r: 150, h: 75, col: '#2e3440', snow: false },
+  { name: "DEADMAN'S BLUFF (SW)", x: -560, y: -420, r: 190, h: 98, col: '#3b4252', snow: false },
+  { name: 'OBSIDIAN MASSIF (SW-Far)', x: -620, y: -780, r: 210, h: 110, col: '#334155', snow: false },
+
+  // Sector 4: West & North-West
+  { name: 'IRON CLIFF (W)', x: -900, y: 40, r: 220, h: 115, col: '#2e3440', snow: false },
+  { name: "DRAGON'S CREST (NW)", x: -540, y: 440, r: 190, h: 95, col: '#3b4252', snow: false },
+  { name: 'THUNDER RIDGE', x: -320, y: 280, r: 150, h: 75, col: '#2e3440', snow: false },
+  { name: 'FROST PEAK (NW-Far)', x: -420, y: 840, r: 200, h: 105, col: '#334155', snow: true },
+].map((m) => ({ ...m, wx: m.x, wy: m.y }));
+
 class DogfightRenderer {
   constructor(canvasElement) {
     this.canvas = canvasElement;
@@ -383,18 +408,7 @@ class DogfightRenderer {
     }
 
     // 2. 3D Mountain Peaks (Sorted back-to-front)
-    const mountains = [
-      // 4 Outer Perimeter Peaks
-      { name: 'MT. TITAN (N)', wx: 0, wy: 780, r: 260, h: 140, col: '#334155', snow: true },
-      { name: 'SOUTH CRAG (S)', wx: 0, wy: -780, r: 260, h: 135, col: '#334155', snow: false },
-      { name: 'TWIN PEAKS (E)', wx: 780, wy: 0, r: 270, h: 140, col: '#3b4252', snow: true },
-      { name: 'IRON CLIFF (W)', wx: -780, wy: 0, r: 270, h: 140, col: '#2e3440', snow: false },
-      // 4 Mid-Field Tactical Peaks (88m - 95m, in combat flight paths!)
-      { name: "EAGLE'S PILLAR", wx: 380, wy: 380, r: 180, h: 95, col: '#334155', snow: false },
-      { name: "DRAGON'S TOOTH", wx: -380, wy: 360, r: 170, h: 90, col: '#2e3440', snow: false },
-      { name: "OBSIDIAN RIDGE", wx: 360, wy: -380, r: 180, h: 92, col: '#3b4252', snow: false },
-      { name: "VIPER PEAK", wx: -360, wy: -380, r: 170, h: 88, col: '#2e3440', snow: false },
-    ];
+    const mountains = [...window.DOGFIGHT_MOUNTAINS];
 
     mountains.sort((a, b) => {
       const da = Math.hypot(a.wx - myPlane.x, a.wy - myPlane.y);
@@ -1027,14 +1041,10 @@ class DogfightRenderer {
     }
 
     // 4. Mountains on Radar (▲)
-    const radarMtn = [
-      { x: 0, y: 780 }, { x: 0, y: -780 }, { x: 780, y: 0 }, { x: -780, y: 0 },
-      { x: 380, y: 380 }, { x: -380, y: 360 }, { x: 360, y: -380 }, { x: -360, y: -380 }
-    ];
     ctx.fillStyle = '#94a3b8';
     ctx.font = 'bold 8px monospace';
     ctx.textAlign = 'center';
-    for (let m of radarMtn) {
+    for (let m of window.DOGFIGHT_MOUNTAINS) {
       const pm = toRadar(m.x, m.y);
       if (pm.inRange) {
         ctx.fillText('▲', pm.x, pm.y + 3);

@@ -132,6 +132,19 @@ class DogfightNetworkManager {
     });
   }
 
+  sendCrash(reason = 'mountain') {
+    this.send({
+      type: 'crash',
+      reason: reason,
+    });
+  }
+
+  sendRespawnRequest() {
+    this.send({
+      type: 'respawn_request',
+    });
+  }
+
   handleMessage(msg) {
     if (!msg || !msg.type) return;
 

@@ -3,21 +3,10 @@
  * Coordinates flight physics, multi-target combat, respawns, HUD, and network sync.
  */
 
-// Shared Battlefield Terrain Mountains (Must fly around/above!)
-const MOUNTAINS = [
-  { name: 'MT. TITAN', x: 0, y: 780, r: 260, h: 140 },
-  { name: 'SOUTH CRAG', x: 0, y: -780, r: 260, h: 135 },
-  { name: 'TWIN PEAKS', x: 780, y: 0, r: 270, h: 140 },
-  { name: 'IRON CLIFF', x: -780, y: 0, r: 270, h: 140 },
-  { name: "EAGLE'S PILLAR", x: 380, y: 380, r: 180, h: 95 },
-  { name: "DRAGON'S TOOTH", x: -380, y: 360, r: 170, h: 90 },
-  { name: "OBSIDIAN RIDGE", x: 360, y: -380, r: 180, h: 92 },
-  { name: "VIPER PEAK", x: -360, y: -380, r: 170, h: 88 },
-];
-
 function getTerrainHeight(x, y) {
   let maxH = 0;
-  for (let m of MOUNTAINS) {
+  const list = window.DOGFIGHT_MOUNTAINS || [];
+  for (let m of list) {
     const dist = Math.hypot(x - m.x, y - m.y);
     if (dist < m.r) {
       const h = m.h * (1 - Math.pow(dist / m.r, 1.1));
@@ -433,8 +422,9 @@ class DogfightGame {
         this.player.heading = data.heading;
         this.player.pitch = 0;
         this.player.roll = 0;
+        this.player.speed = 95;
         this.player.hasShield = true;
-        this.player.shieldUntil = performance.now() + 3000;
+        this.player.shieldUntil = performance.now() + (data.shieldDuration ? data.shieldDuration * 1000 : 3000);
 
         this.hideDeathScreen();
         this.audio.playRespawn();
@@ -518,20 +508,53 @@ class DogfightGame {
     this.dom.deathKillerName.textContent = killerCallsign;
     this.dom.deathOverlay.style.display = 'flex';
 
+    if (this.deathTimerInterval) {
+      clearInterval(this.deathTimerInterval);
+    }
+
     let rem = Math.ceil(seconds);
     this.dom.respawnCountdown.textContent = rem;
-    const interval = setInterval(() => {
+    this.deathTimerInterval = setInterval(() => {
       rem--;
       if (rem >= 0) {
         this.dom.respawnCountdown.textContent = rem;
       }
-      if (rem <= 0 || !this.player.isDead) {
-        clearInterval(interval);
+      if (rem <= 0) {
+        clearInterval(this.deathTimerInterval);
+        this.deathTimerInterval = null;
+
+        // If local player is still dead after countdown finishes, request respawn
+        if (this.player.isDead) {
+          this.network.sendRespawnRequest();
+
+          // Client-side failsafe watchdog: if server response delayed > 1.5s, self-restore safely
+          setTimeout(() => {
+            if (this.player.isDead) {
+              console.warn('[Failsafe] Auto-respawning local player safely');
+              this.player.isDead = false;
+              this.player.level = 1;
+              this.player.hp = 100;
+              this.player.maxHp = 100;
+              this.player.alt = 60;
+              this.player.pitch = 0;
+              this.player.roll = 0;
+              this.player.speed = 95;
+              this.player.hasShield = true;
+              this.player.shieldUntil = performance.now() + 3000;
+              this.hideDeathScreen();
+              this.audio.playRespawn();
+            }
+          }, 1500);
+        }
       }
     }, 1000);
   }
 
   hideDeathScreen() {
+    if (this.deathTimerInterval) {
+      clearInterval(this.deathTimerInterval);
+      this.deathTimerInterval = null;
+    }
     if (this.dom.deathOverlay) {
       this.dom.deathOverlay.style.display = 'none';
     }
@@ -760,7 +783,7 @@ class DogfightGame {
         }
 
         // Mountain Crash Destruction
-        if (clearance <= 0 && !this.player.isDead) {
+        if (clearance <= 0 && !this.player.isDead && !this.player.hasShield) {
           this.player.hp = 0;
           this.player.isDead = true;
           this.player.level = 1;
@@ -771,6 +794,7 @@ class DogfightGame {
           this.renderer.triggerShake(500, 20);
           this.renderer.triggerFlash(400, 'rgba(239, 68, 68, 0.85)');
           this.showDeathScreen('MOUNTAIN TERRAIN (ชนภูเขา)', 3.0);
+          this.network.sendCrash('mountain');
         }
 
         // Network State Sync (25 Hz)
