@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sky Ace: Dogfight Arena (Multiplayer Online)</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="game-container">
+    <!-- 3D Perspective Canvas Flight Display -->
+    <canvas id="flight-canvas" width="960" height="540"></canvas>
+
+    <!-- In-Game Tactical HUD Overlay -->
+    <div id="hud-container" style="display: none;">
+      <!-- Top Telemetry Bar -->
+      <div class="hud-top-bar">
+        <div class="hud-pill">
+          <span id="hud-room-code" class="hud-room-tag">ROOM: SKY-1</span>
+          <button id="btn-copy-link" class="btn-mini-hud">🔗 Share Link</button>
+          <span id="hud-shield-badge" class="hud-shield-badge" style="display: none;">🛡️ SHIELD ACTIVE</span>
+        </div>
+
+        <div class="hud-pill">
+          <span class="hud-score-stat">KILLS: <strong id="hud-kills">0</strong></span>
+          <span class="hud-score-stat">DEATHS: <strong id="hud-deaths">0</strong></span>
+          <span class="hud-score-stat">PING: <strong id="hud-ping">--ms</strong></span>
+          <span style="color: #64748b; font-size: 11px;">[TAB] SCOREBOARD</span>
+        </div>
+      </div>
+
+      <!-- Live Kill Feed (Top Right) -->
+      <div id="kill-feed"></div>
+
+      <!-- Bottom Health Status Bar -->
+      <div class="hud-bottom-bar">
+        <div class="hp-bar-frame">
+          <div id="hud-hp-bar" class="hp-good" style="width: 100%;"></div>
+        </div>
+        <div class="hp-label">HULL INTEGRITY: <span id="hud-hp-text">100 / 100</span></div>
+      </div>
+    </div>
+
+    <!-- Death & Respawn Screen -->
+    <div id="overlay-death" style="display: none;">
+      <div class="death-title">AIRCRAFT DESTROYED</div>
+      <div class="death-subtitle">Shot down by <strong id="death-killer-name">Enemy Ace</strong></div>
+      <div class="respawn-timer-box">
+        <span>RESPAWNING IN</span>
+        <span id="respawn-countdown" class="num">3</span>
+        <span>SEC</span>
+      </div>
+    </div>
+
+    <!-- Scoreboard Modal (Hold Tab) -->
+    <div id="modal-scoreboard" style="display: none;">
+      <div class="scoreboard-card">
+        <div class="scoreboard-header">
+          <span>SORTIE COMBAT LEADERBOARD</span>
+          <span style="font-size: 12px; color: #94a3b8;">HOLD [TAB] TO VIEW</span>
+        </div>
+        <table class="scoreboard-table">
+          <thead>
+            <tr>
+              <th style="width: 50px;">RANK</th>
+              <th>CALLSIGN</th>
+              <th class="num" style="width: 70px;">KILLS</th>
+              <th class="num" style="width: 70px;">DEATHS</th>
+              <th class="num" style="width: 90px;">SCORE</th>
+              <th class="num" style="width: 80px;">PING</th>
+            </tr>
+          </thead>
+          <tbody id="scoreboard-table-body">
+            <!-- Dynamic rows -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Lobby / Join Room Modal -->
+    <div id="modal-lobby" class="overlay-modal">
+      <div class="lobby-card">
+        <div class="lobby-header">
+          <h1>SKY ACE // DOGFIGHT ARENA</h1>
+          <p>Tactical Multiplayer Air Combat • 10-Pilot Free-For-All</p>
+        </div>
+
+        <div class="form-group">
+          <label>PILOT CALLSIGN (ชื่อนักบิน)</label>
+          <input type="text" id="input-callsign" class="input-tactical" placeholder="Maverick" maxlength="15" value="Maverick">
+        </div>
+
+        <div class="form-group">
+          <label>FIGHTER JET SKIN COLOR (สีเครื่องบิน)</label>
+          <div class="color-picker-row">
+            <button class="color-choice active" data-color="#38bdf8" style="background:#38bdf8;" title="Navy Cyan"></button>
+            <button class="color-choice" data-color="#ef4444" style="background:#ef4444;" title="Crimson Red"></button>
+            <button class="color-choice" data-color="#f59e0b" style="background:#f59e0b;" title="Amber Gold"></button>
+            <button class="color-choice" data-color="#10b981" style="background:#10b981;" title="Emerald Green"></button>
+            <button class="color-choice" data-color="#a855f7" style="background:#a855f7;" title="Phantom Purple"></button>
+            <button class="color-choice" data-color="#cbd5e1" style="background:#cbd5e1;" title="Stealth Silver"></button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>ROOM CODE (รหัสห้อง)</label>
+          <div class="form-row">
+            <input type="text" id="input-room" class="input-tactical" placeholder="SKY-1" maxlength="10" value="SKY-1">
+            <button id="btn-create" class="btn-secondary-action">สุ่มรหัสห้องใหม่</button>
+          </div>
+        </div>
+
+        <div class="controls-guide-box">
+          <div>🕹️ <strong>การควบคุมเครื่องบิน (Real Flight Controls):</strong></div>
+          <div>• <strong>Pitch (เชิด/กด):</strong> ปุ่ม <strong>S</strong> หรือดึงคันโยกถอยหลัง (หัวเชิดขึ้น) / ปุ่ม <strong>W</strong> หรือดันไปข้างหน้า (หัวกดลง)</div>
+          <div>• <strong>Bank / Roll (เลี้ยว):</strong> ปุ่ม <strong>A / D</strong> หรือโยกคันโยก ซ้าย / ขวา</div>
+          <div>• <strong>Throttle (ความเร็ว):</strong> <strong>Shift / Ctrl</strong> หรือ <strong>ลูกศรขึ้น / ลง</strong> (70 - 140 Knots)</div>
+          <div>• <strong>Cannon Fire (ยิง):</strong> <strong>Spacebar</strong>, ไกปืนจอยสติ๊ก หรือ <strong>คลิกเมาส์ซ้าย</strong></div>
+          <div>• <strong>Scoreboard:</strong> กดปุ่ม <strong>Tab</strong> เพื่อดูตารางคะแนนสด</div>
+        </div>
+
+        <div class="lobby-settings-bar">
+          <div id="joystick-status-badge" class="joystick-badge">
+            <span class="dot">○</span> ⌨️ Keyboard Mode (W/S/A/D)
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button id="btn-invert-pitch" class="btn-toggle-setting">Invert Pitch</button>
+            <button id="btn-invert-roll" class="btn-toggle-setting">Invert Roll</button>
+          </div>
+        </div>
+
+        <button id="btn-join" class="btn-primary-action">ENGAGE SORTIE (เข้าสู่สนามรบ)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audio, Input, Renderer, Network & Game Engine -->
+  <script src="js/audio.js"></script>
+  <script src="js/joystick.js"></script>
+  <script src="js/renderer.js"></script>
+  <script src="js/network.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
