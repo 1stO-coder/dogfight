@@ -69,18 +69,19 @@ def get_terrain_height(x: float, y: float) -> float:
 
 
 def get_safe_spawn_point():
-    """Find safe coordinates in open airspace away from mountain peaks (ground_h < 5m)"""
-    for _ in range(50):
+    """Find safe coordinates in open airspace away from mountain peaks across the entire map (80m to 1050m)"""
+    for _ in range(60):
         angle = random.random() * 2 * math.pi
-        dist = 240.0 + random.random() * 450.0
+        dist = 80.0 + random.random() * 970.0  # 80m to 1050m across all sectors
         x = dist * math.cos(angle)
         y = dist * math.sin(angle)
         ground_h = get_terrain_height(x, y)
         if ground_h < 5.0:
-            alt = 55.0 + random.random() * 20.0  # Safe cruising 55m - 75m
-            heading = (math.degrees(math.atan2(-x, -y)) + 360) % 360
-            return x, y, alt, heading
-    return 0.0, -100.0, 60.0, 0.0
+            alt = 45.0 + random.random() * 35.0  # Safe cruising 45m - 80m
+            center_angle = math.degrees(math.atan2(-x, -y))
+            heading = (center_angle + (random.random() - 0.5) * 80.0 + 360) % 360
+            return round(x, 1), round(y, 1), round(alt, 1), round(heading, 1)
+    return 0.0, -150.0, 60.0, 0.0
 
 
 class Item:
@@ -119,10 +120,12 @@ class Player:
         self.level = 1
         self.max_hp = 100
         self.hp = 100
+        self.shield_hp = 0  # +20 temporary HP shield from item pickup
+        self.shield_until = 0.0  # Temporary armor expiry (2 minutes)
+        self.spawn_protection_until = time.time() + 3.0  # 3s spawn invulnerability
+        self.damage_boost_until = 0.0  # 2x cannon damage buff (lasts 120s = 2 min)
         self.is_dead = False
         self.respawn_at = 0.0
-        self.shield_until = time.time() + 3.0  # 3s shield on initial join
-        self.damage_boost_until = 0.0  # 2x cannon damage buff (lasts 120s = 2 min)
         self.kills = 0
         self.deaths = 0
         self.score = 0
@@ -131,6 +134,8 @@ class Player:
 
     def to_dict(self):
         now = time.time()
+        has_active_armor = (now < self.shield_until) and (self.shield_hp > 0)
+        has_spawn_protection = now < self.spawn_protection_until
         return {
             "id": self.id,
             "callsign": self.callsign,
@@ -145,9 +150,11 @@ class Player:
             "level": self.level,
             "hp": self.hp,
             "maxHp": self.max_hp,
+            "shieldHp": self.shield_hp if has_active_armor else 0,
             "isDead": self.is_dead,
-            "hasShield": now < self.shield_until,
-            "shieldRem": max(0.0, round(self.shield_until - now, 1)),
+            "hasShield": has_active_armor,
+            "hasSpawnProtection": has_spawn_protection,
+            "shieldRem": max(0.0, round(self.shield_until - now, 1)) if has_active_armor else 0.0,
             "hasDamageBoost": now < self.damage_boost_until,
             "damageBoostRem": max(0.0, round(self.damage_boost_until - now, 1)),
             "kills": self.kills,
@@ -209,7 +216,8 @@ class Room:
                 elif item.type == "damage_boost":
                     player.damage_boost_until = now + 120.0  # 2 minutes
                 elif item.type == "shield":
-                    player.shield_until = max(player.shield_until, now + 120.0)  # 2 minutes
+                    player.shield_hp = min(40, player.shield_hp + 20)  # +20 temporary HP shield
+                    player.shield_until = now + 120.0  # 2 minutes duration
                 return item
         return None
 
@@ -380,8 +388,9 @@ class GameServer:
                         # Mountain Terrain Collision Check
                         ground_h = get_terrain_height(player.x, player.y)
                         now = time.time()
-                        if player.alt <= ground_h and not player.is_dead and now > player.shield_until:
+                        if player.alt <= ground_h and not player.is_dead and now > player.spawn_protection_until:
                             player.hp = 0
+                            player.shield_hp = 0
                             player.is_dead = True
                             player.respawn_at = now + 3.0
                             player.deaths += 1
@@ -420,6 +429,7 @@ class GameServer:
                                     "collectorCallsign": player.callsign,
                                     "collectorHp": player.hp,
                                     "collectorMaxHp": player.max_hp,
+                                    "collectorShieldHp": player.shield_hp,
                                     "collectorShieldRem": max(0.0, round(player.shield_until - now, 1)),
                                     "collectorDamageBoostRem": max(0.0, round(player.damage_boost_until - now, 1)),
                                 }
@@ -444,8 +454,9 @@ class GameServer:
                 # 3.5. Direct Terrain Crash Event from Client
                 if msg_type == "crash":
                     now = time.time()
-                    if not player.is_dead and now > player.shield_until:
+                    if not player.is_dead and now > player.spawn_protection_until:
                         player.hp = 0
+                        player.shield_hp = 0
                         player.is_dead = True
                         player.respawn_at = now + 3.0
                         player.deaths += 1
@@ -479,9 +490,11 @@ class GameServer:
                         player.level = 1
                         player.max_hp = 100
                         player.hp = 100
+                        player.shield_hp = 0
+                        player.shield_until = 0.0
                         player.damage_boost_until = 0.0
                         player.respawn_at = 0.0
-                        player.shield_until = now + 3.0
+                        player.spawn_protection_until = now + 3.0
                         x, y, alt, heading = get_safe_spawn_point()
                         player.x = x
                         player.y = y
@@ -500,7 +513,8 @@ class GameServer:
                                 "hp": player.hp,
                                 "maxHp": player.max_hp,
                                 "level": player.level,
-                                "shieldDuration": 3.0,
+                                "shieldHp": 0,
+                                "spawnProtectionDuration": 3.0,
                             }
                         )
                         print(f"[Respawn Request] {player.callsign} respawned safely at ({player.x:.1f}, {player.y:.1f}, alt={player.alt:.1f})")
@@ -537,9 +551,19 @@ class GameServer:
                         and not player.is_dead
                     ):
                         target = current_room.players[target_id]
-                        # Cannot damage dead player or shielded player
-                        if not target.is_dead and now > target.shield_until:
-                            target.hp = max(0, target.hp - effective_damage)
+                        # Target cannot take damage if in 3s spawn protection or dead
+                        if not target.is_dead and now > target.spawn_protection_until:
+                            # 1. Absorb damage using temporary shield armor if active (+20 HP shield)
+                            shield_absorbed = 0
+                            if now < target.shield_until and target.shield_hp > 0:
+                                shield_absorbed = min(target.shield_hp, effective_damage)
+                                target.shield_hp -= shield_absorbed
+                                remaining_damage = effective_damage - shield_absorbed
+                            else:
+                                remaining_damage = effective_damage
+
+                            # 2. Apply remaining damage to hull HP
+                            target.hp = max(0, target.hp - remaining_damage)
 
                             # Notify room of damage
                             await current_room.broadcast(
@@ -547,7 +571,9 @@ class GameServer:
                                     "type": "player_damaged",
                                     "targetId": target_id,
                                     "hp": target.hp,
+                                    "shieldHp": target.shield_hp if (now < target.shield_until) else 0,
                                     "damage": effective_damage,
+                                    "shieldAbsorbed": shield_absorbed,
                                     "attackerId": player_id,
                                 }
                             )
@@ -560,6 +586,8 @@ class GameServer:
                                 # Death penalty: Reset victim back to LV.1 and default 100 max HP
                                 target.level = 1
                                 target.max_hp = 100
+                                target.shield_hp = 0
+                                target.shield_until = 0.0
                                 target.damage_boost_until = 0.0
 
                                 # Killer rewards: kills, score, level up, max HP upgrade, and HP heal reward!
@@ -645,7 +673,9 @@ class GameServer:
                         p.hp = 100
                         p.damage_boost_until = 0.0
                         p.respawn_at = 0.0
-                        p.shield_until = now + 3.0  # 3s invulnerability shield
+                        p.shield_hp = 0
+                        p.shield_until = 0.0
+                        p.spawn_protection_until = now + 3.0  # 3s invulnerability on spawn
                         p.x, p.y, p.alt, p.heading = get_safe_spawn_point()
                         p.speed = 95.0
 
@@ -661,7 +691,8 @@ class GameServer:
                                     "hp": p.hp,
                                     "maxHp": p.max_hp,
                                     "level": p.level,
-                                    "shieldDuration": 3.0,
+                                    "shieldHp": 0,
+                                    "spawnProtectionDuration": 3.0,
                                 }
                             )
                         )

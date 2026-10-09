@@ -39,9 +39,12 @@ class DogfightGame {
       level: 1,
       hp: 100,
       maxHp: 100,
+      shieldHp: 0,
       isDead: false,
-      hasShield: true,
-      shieldUntil: performance.now() + 3000,
+      hasShield: false,
+      hasSpawnProtection: true,
+      spawnProtectionUntil: performance.now() + 3000,
+      shieldUntil: 0,
       hasDamageBoost: false,
       damageBoostUntil: 0,
       kills: 0,
@@ -94,6 +97,7 @@ class DogfightGame {
       scoreboardModal: document.getElementById('modal-scoreboard'),
       scoreboardTable: document.getElementById('scoreboard-table-body'),
       hudHpBar: document.getElementById('hud-hp-bar'),
+      hudShieldBar: document.getElementById('hud-shield-bar'),
       hudHpText: document.getElementById('hud-hp-text'),
       hudKills: document.getElementById('hud-kills'),
       hudDeaths: document.getElementById('hud-deaths'),
@@ -272,7 +276,9 @@ class DogfightGame {
           this.player.score = p.score;
           this.player.level = p.level || this.player.level;
           this.player.maxHp = p.maxHp || this.player.maxHp;
-          this.player.hasShield = p.hasShield;
+          this.player.shieldHp = p.shieldHp || 0;
+          this.player.hasShield = p.hasShield || false;
+          this.player.hasSpawnProtection = p.hasSpawnProtection || false;
           this.player.hasDamageBoost = p.hasDamageBoost;
         } else {
           // Interpolate remote player
@@ -289,9 +295,11 @@ class DogfightGame {
             op.speed = p.speed;
             op.hp = p.hp;
             op.maxHp = p.maxHp || 100;
+            op.shieldHp = p.shieldHp || 0;
             op.level = p.level || 1;
             op.isDead = p.isDead;
             op.hasShield = p.hasShield;
+            op.hasSpawnProtection = p.hasSpawnProtection;
             op.hasDamageBoost = p.hasDamageBoost;
             op.kills = p.kills;
             op.deaths = p.deaths;
@@ -319,16 +327,20 @@ class DogfightGame {
           this.showPowerupSplash('⚡ OVERCHARGED CANNONS!', '2X DAMAGE • 2 MINUTES DURATION');
         } else if (data.itemType === 'shield') {
           this.audio.playItemPickup('shield');
+          this.player.shieldHp = data.collectorShieldHp !== undefined ? data.collectorShieldHp : (this.player.shieldHp + 20);
           this.player.hasShield = true;
           this.player.shieldUntil = performance.now() + 120000;
-          this.showPowerupSplash('🛡️ ENERGY SHIELD ENGAGED!', 'PROTECTIVE ARMOR • 2 MINUTES DURATION');
+          this.showPowerupSplash('🛡️ TEMPORARY ARMOR +20 HP!', 'เพิ่มเกราะ +20 เลือดชั่วคราว • 2 MINUTES DURATION');
         }
       } else {
         const p = this.otherPlayers[data.collectorId];
         if (p) {
           p.hp = data.collectorHp;
           p.maxHp = data.collectorMaxHp;
-          if (data.itemType === 'shield') p.hasShield = true;
+          if (data.itemType === 'shield') {
+            p.hasShield = true;
+            p.shieldHp = data.collectorShieldHp !== undefined ? data.collectorShieldHp : 20;
+          }
           if (data.itemType === 'damage_boost') p.hasDamageBoost = true;
         }
       }
@@ -351,8 +363,15 @@ class DogfightGame {
     this.network.callbacks.onPlayerDamaged = (data) => {
       if (data.targetId === this.player.id) {
         this.player.hp = data.hp;
-        this.renderer.triggerShake(90, 5);
-        this.renderer.triggerFlash(90, 'rgba(239, 68, 68, 0.45)');
+        if (data.shieldHp !== undefined) {
+          this.player.shieldHp = data.shieldHp;
+        }
+        if (data.shieldAbsorbed && data.shieldAbsorbed > 0) {
+          this.renderer.triggerFlash(90, 'rgba(56, 189, 248, 0.45)');
+        } else {
+          this.renderer.triggerShake(90, 5);
+          this.renderer.triggerFlash(90, 'rgba(239, 68, 68, 0.45)');
+        }
         this.audio.playHitTarget();
         if (this.player.hp < 30) {
           this.audio.playWarningSiren();
@@ -361,6 +380,7 @@ class DogfightGame {
         const tgt = this.otherPlayers[data.targetId];
         if (tgt) {
           tgt.hp = data.hp;
+          if (data.shieldHp !== undefined) tgt.shieldHp = data.shieldHp;
         }
       }
     };
@@ -414,6 +434,10 @@ class DogfightGame {
         this.player.level = 1; // Resets to LV.1 on death!
         this.player.maxHp = 100;
         this.player.hp = 100;
+        this.player.shieldHp = 0;
+        this.player.hasShield = false;
+        this.player.hasSpawnProtection = true;
+        this.player.spawnProtectionUntil = performance.now() + 3000;
         this.player.hasDamageBoost = false;
         this.player.damageBoostUntil = 0;
         this.player.x = data.x;
@@ -423,8 +447,6 @@ class DogfightGame {
         this.player.pitch = 0;
         this.player.roll = 0;
         this.player.speed = 95;
-        this.player.hasShield = true;
-        this.player.shieldUntil = performance.now() + (data.shieldDuration ? data.shieldDuration * 1000 : 3000);
 
         this.hideDeathScreen();
         this.audio.playRespawn();
@@ -436,13 +458,15 @@ class DogfightGame {
           p.level = 1;
           p.maxHp = 100;
           p.hp = 100;
+          p.shieldHp = 0;
+          p.hasShield = false;
+          p.hasSpawnProtection = true;
           p.x = data.x;
           p.y = data.y;
           p.targetX = data.x;
           p.targetY = data.y;
           p.alt = data.alt;
           p.heading = data.heading;
-          p.hasShield = true;
         }
       }
     };
@@ -486,8 +510,8 @@ class DogfightGame {
     }
     this.renderer.addTracer(aimX, aimY);
 
-    // Hit Registration check against active targets in front
-    if (this.lockedTarget && !this.lockedTarget.isDead && !this.lockedTarget.hasShield) {
+    // Hit Registration check against active targets in front (spawn protected targets are immune)
+    if (this.lockedTarget && !this.lockedTarget.isDead && !this.lockedTarget.hasSpawnProtection) {
       const tx = this.lockedTarget.screenX;
       const ty = this.lockedTarget.screenY;
       const distToCrosshair = Math.hypot(480 - tx, 270 - ty);
@@ -618,8 +642,25 @@ class DogfightGame {
       this.dom.hudHpBar.style.width = `${pct}%`;
       this.dom.hudHpBar.className = pct > 50 ? 'hp-good' : (pct > 25 ? 'hp-warn' : 'hp-crit');
     }
+
+    // Temporary Armor Overlay Bar
+    if (this.dom.hudShieldBar) {
+      if (this.player.shieldHp > 0) {
+        const sPct = Math.min(100, (this.player.shieldHp / 20) * 100);
+        this.dom.hudShieldBar.style.width = `${sPct}%`;
+        this.dom.hudShieldBar.style.display = 'block';
+      } else {
+        this.dom.hudShieldBar.style.width = '0%';
+        this.dom.hudShieldBar.style.display = 'none';
+      }
+    }
+
     if (this.dom.hudHpText) {
-      this.dom.hudHpText.textContent = `${Math.round(this.player.hp)} / ${this.player.maxHp || 100}`;
+      if (this.player.shieldHp > 0) {
+        this.dom.hudHpText.textContent = `${Math.round(this.player.hp)} / ${this.player.maxHp || 100} (+${this.player.shieldHp} 🛡️ เกราะ)`;
+      } else {
+        this.dom.hudHpText.textContent = `${Math.round(this.player.hp)} / ${this.player.maxHp || 100}`;
+      }
     }
     if (this.dom.hudLevelBadge) {
       const rankTitle = this.getRankTitle(this.player.level || 1);
@@ -637,9 +678,13 @@ class DogfightGame {
 
     // Active Buff Badges (Shield & Damage Boost)
     if (this.dom.hudShieldBadge) {
-      if (this.player.hasShield) {
+      if (this.player.shieldHp > 0 && performance.now() < this.player.shieldUntil) {
         const sec = Math.max(0, Math.ceil((this.player.shieldUntil - performance.now()) / 1000));
-        this.dom.hudShieldBadge.textContent = `🛡️ SHIELD (${sec}s)`;
+        this.dom.hudShieldBadge.textContent = `🛡️ เกราะ +${this.player.shieldHp} (${sec}s)`;
+        this.dom.hudShieldBadge.style.display = 'inline-block';
+      } else if (performance.now() < this.player.spawnProtectionUntil) {
+        const sec = Math.max(0, Math.ceil((this.player.spawnProtectionUntil - performance.now()) / 1000));
+        this.dom.hudShieldBadge.textContent = `🛡️ SPAWN SHIELD (${sec}s)`;
         this.dom.hudShieldBadge.style.display = 'inline-block';
       } else {
         this.dom.hudShieldBadge.style.display = 'none';
@@ -752,8 +797,9 @@ class DogfightGame {
         this.player.y += Math.cos(headingRad) * speedMPS * dt;
         this.flightDistance += speedMPS * dt;
 
-        // Check shield expiry
-        if (this.player.hasShield && performance.now() > this.player.shieldUntil) {
+        // Check temporary shield armor expiry
+        if (this.player.shieldHp > 0 && performance.now() > this.player.shieldUntil) {
+          this.player.shieldHp = 0;
           this.player.hasShield = false;
         }
 
@@ -782,9 +828,11 @@ class DogfightGame {
           this.terrainWarning = false;
         }
 
-        // Mountain Crash Destruction
-        if (clearance <= 0 && !this.player.isDead && !this.player.hasShield) {
+        // Mountain Crash Destruction (Spawn protected planes are immune)
+        const isSpawnProtected = performance.now() < this.player.spawnProtectionUntil;
+        if (clearance <= 0 && !this.player.isDead && !isSpawnProtected) {
           this.player.hp = 0;
+          this.player.shieldHp = 0;
           this.player.isDead = true;
           this.player.level = 1;
           this.player.maxHp = 100;

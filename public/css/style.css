@@ -175,6 +175,7 @@ body {
 }
 
 .hp-bar-frame {
+  position: relative;
   width: 320px;
   height: 14px;
   background: rgba(15, 23, 42, 0.85);
@@ -188,6 +189,18 @@ body {
   height: 100%;
   width: 100%;
   transition: width 0.25s ease-out, background-color 0.25s;
+}
+
+#hud-shield-bar {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  height: calc(100% - 2px);
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.95), rgba(96, 165, 250, 0.95));
+  box-shadow: 0 0 8px #38bdf8;
+  border-radius: 2px;
+  transition: width 0.2s ease-out;
+  pointer-events: none;
 }
 
 .hp-good { background: linear-gradient(90deg, #059669, #10b981); }

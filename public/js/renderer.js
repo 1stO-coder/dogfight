@@ -681,8 +681,9 @@ class DogfightRenderer {
       const remoteRollRad = ((p.roll || 0) * Math.PI) / 180;
       ctx.rotate(remoteRollRad * 0.7);
 
-      // 1. Invulnerability Shield Bubble
-      if (p.hasShield) {
+      // 1. Invulnerability / Armor Shield Bubble
+      const hasAnyShield = p.hasSpawnProtection || (p.shieldHp && p.shieldHp > 0) || p.hasShield;
+      if (hasAnyShield) {
         const shieldPulse = 1.0 + Math.sin(now * 0.015) * 0.12;
         ctx.strokeStyle = '#38bdf8';
         ctx.lineWidth = 2.5;
@@ -754,11 +755,12 @@ class DogfightRenderer {
       // Overhead Callsign & HP Bar (counter-rotate so text remains level)
       ctx.rotate(-remoteRollRad * 0.7);
 
-      // Callsign with Level
+      // Callsign with Level and Armor
+      const armorBadge = (p.shieldHp && p.shieldHp > 0) ? ` 🛡️+${p.shieldHp}` : '';
       ctx.fillStyle = (p.level >= 4) ? '#f59e0b' : '#ffffff';
       ctx.font = 'bold 11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`[LV.${p.level || 1}] ${p.callsign}`, 0, -38);
+      ctx.fillText(`[LV.${p.level || 1}] ${p.callsign}${armorBadge}`, 0, -38);
 
       // Mini HP Bar
       const barW = 44;
@@ -768,12 +770,18 @@ class DogfightRenderer {
       ctx.fillRect(-barW / 2, -34, barW, barH);
       ctx.fillStyle = hpPct > 0.5 ? '#10b981' : (hpPct > 0.25 ? '#f59e0b' : '#ef4444');
       ctx.fillRect(-barW / 2, -34, barW * hpPct, barH);
+      // Temporary Armor Overlay Bar (+20 HP)
+      if (p.shieldHp && p.shieldHp > 0) {
+        const armorPct = Math.min(1.0, p.shieldHp / 20);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillRect(-barW / 2, -37, barW * armorPct, 2.5);
+      }
       ctx.strokeStyle = '#38bdf8';
       ctx.lineWidth = 1;
       ctx.strokeRect(-barW / 2, -34, barW, barH);
 
-      // Energy Shield Bubble
-      if (p.hasShield) {
+      // Energy Shield Bubble (Spawn protection or active armor)
+      if (hasAnyShield) {
         ctx.strokeStyle = '#38bdf8';
         ctx.fillStyle = 'rgba(56, 189, 248, 0.18)';
         ctx.lineWidth = 1.5;
