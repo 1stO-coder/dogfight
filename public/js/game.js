@@ -501,29 +501,77 @@ class DogfightGame {
     this.renderer.triggerShake(50, 2.5);
     this.network.sendFire();
 
-    // Visual Wing Cannon Tracers
-    let aimX = 480;
-    let aimY = 270;
-    if (this.lockedTarget && this.lockedTarget.screenX !== undefined) {
-      aimX = this.lockedTarget.screenX;
-      aimY = this.lockedTarget.screenY;
-    }
-    this.renderer.addTracer(aimX, aimY);
+    // 3D Aircraft Orientation Vectors for Gun Boresight
+    const hRad = (this.player.heading * Math.PI) / 180;
+    const pRad = ((this.player.pitch || 0) * Math.PI) / 180;
+    const rRad = ((this.player.roll || 0) * Math.PI) / 180;
 
-    // Hit Registration check against active targets in front (spawn protected targets are immune)
-    if (this.lockedTarget && !this.lockedTarget.isDead && !this.lockedTarget.hasSpawnProtection) {
-      const tx = this.lockedTarget.screenX;
-      const ty = this.lockedTarget.screenY;
-      const distToCrosshair = Math.hypot(480 - tx, 270 - ty);
+    const sinH = Math.sin(hRad), cosH = Math.cos(hRad);
+    const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
+    const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
 
-      // Hits register when target is in gunsight lock cone (< 90px)
-      if (this.lockedTarget.dist < 800 && distToCrosshair < 90) {
-        this.audio.playHitTarget();
-        this.renderer.addExplosion(tx, ty, 0.7);
-        this.renderer.triggerFlash(90, 'rgba(255, 176, 46, 0.4)');
-        const dmg = this.player.hasDamageBoost ? 24 : 12;
-        this.network.sendHit(this.lockedTarget.id, dmg);
+    const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
+    const Rx = cosH * cosR + sinH * sinP * sinR;
+    const Ry = -sinH * cosR + cosH * sinP * sinR;
+    const Rz = -cosP * sinR;
+    const Ux = -cosH * sinR + sinH * sinP * cosR;
+    const Uy = sinH * sinR + cosH * sinP * cosR;
+    const Uz = cosP * cosR;
+
+    let hitTarget = null;
+    let hitScreenX = 480;
+    let hitScreenY = 270;
+    let bestAimDist = Infinity;
+
+    const otherList = Object.values(this.otherPlayers);
+    for (let p of otherList) {
+      if (p.isDead || p.hasSpawnProtection) continue;
+
+      const dx = p.x - this.player.x;
+      const dy = p.y - this.player.y;
+      const dz = (p.alt - this.player.alt) * 8.0;
+      const dist = Math.hypot(dx, dy);
+
+      // Gun effective range is strictly < 500 meters
+      if (dist >= 500) continue;
+
+      // Project into aircraft body coordinates
+      const relZ = dx * Fx + dy * Fy + dz * Fz;
+      if (relZ <= 10) continue; // Behind or too close
+
+      const relX = dx * Rx + dy * Ry + dz * Rz;
+      const relY = dx * Ux + dy * Uy + dz * Uz;
+
+      // Perspective projection
+      const k = 620 / Math.max(20, relZ);
+      const sx = 480 + relX * k;
+      const sy = 270 - relY * k;
+
+      if (sx < -40 || sx > 1000 || sy < -40 || sy > 580) continue;
+
+      const distToCrosshair = Math.hypot(480 - sx, 270 - sy);
+      // Gunsight alignment cone (~70px close up, ~40px at 480m)
+      const hitRadius = Math.max(38, 75 * (1 - dist / 550));
+
+      if (distToCrosshair <= hitRadius && distToCrosshair < bestAimDist) {
+        bestAimDist = distToCrosshair;
+        hitTarget = p;
+        hitScreenX = sx;
+        hitScreenY = sy;
       }
+    }
+
+    if (hitTarget) {
+      this.renderer.addTracer(hitScreenX, hitScreenY);
+      this.audio.playHitTarget();
+      this.renderer.addExplosion(hitScreenX, hitScreenY, 0.7);
+      this.renderer.triggerFlash(90, 'rgba(255, 176, 46, 0.4)');
+      const dmg = this.player.hasDamageBoost ? 24 : 12;
+      this.network.sendHit(hitTarget.id, dmg);
+    } else {
+      const sprayX = 480 + (Math.random() - 0.5) * 16;
+      const sprayY = 270 + (Math.random() - 0.5) * 16;
+      this.renderer.addTracer(sprayX, sprayY);
     }
   }
 
@@ -769,32 +817,46 @@ class DogfightGame {
 
         // Flight Physics Update:
         // Authentic flight controls:
-        // S / Stick Back = +Pitch (Climb)
-        // W / Stick Forward = -Pitch (Dive)
+        // S / Stick Back = +Pitch (Climb / 360° Loop)
+        // W / Stick Forward = -Pitch (Dive / Invert)
         // D / Stick Right = +Roll (Bank Right)
         // A / Stick Left = -Roll (Bank Left)
-        const controlSpeed = 42; // deg/sec
-        this.player.pitch = Math.max(-35, Math.min(35, this.player.pitch + input.pitch * controlSpeed * dt));
+        const controlSpeed = 48; // deg/sec (full 360° loop takes ~7.5s)
+        this.player.pitch = (this.player.pitch + input.pitch * controlSpeed * dt + 360) % 360;
         this.player.roll = Math.max(-60, Math.min(60, this.player.roll + input.roll * controlSpeed * dt));
 
         // Banking turns heading (coordinated turn dynamics: ~55 deg/s at 20° bank)
         const turnRate = (this.player.roll / 20) * 55;
         this.player.heading = (this.player.heading + turnRate * dt + 360) % 360;
 
-        // Altitude physics: climbing raises alt, diving lowers alt
-        const climbRate = 5.2;
-        this.player.alt = Math.max(5, Math.min(95, this.player.alt + (this.player.pitch / 25) * climbRate * dt));
+        // Airspeed energy dynamics ("เชิดเครื่องขึ้นความเร็วลด กดความเร็วเพิ่ม"):
+        const pitchRad = (this.player.pitch * Math.PI) / 180;
+        const sinPitch = Math.sin(pitchRad);
+        const cosPitch = Math.cos(pitchRad);
 
-        // Airspeed dynamics: base 95 kts scaled by throttle input (70 to 140 kts)
-        const targetSpeed = 95 * input.throttle;
-        this.player.speed += (targetSpeed - this.player.speed) * 4 * dt;
+        // Base throttle speed (approx 66 to 133 kts)
+        const baseThrottleSpeed = 95 * input.throttle;
+
+        // Climbing (sinPitch > 0): bleeds speed down by up to 42 kts
+        // Diving (sinPitch < 0): accelerates speed up by up to 58 kts
+        const gravityBias = -sinPitch * (sinPitch > 0 ? 42.0 : 58.0);
+        const dynamicTargetSpeed = Math.max(46, Math.min(165, baseThrottleSpeed + gravityBias));
+
+        const accelFactor = sinPitch < -0.2 ? 4.5 : 3.0;
+        this.player.speed += (dynamicTargetSpeed - this.player.speed) * accelFactor * dt;
+        this.player.speed = Math.max(45, Math.min(165, this.player.speed));
         this.audio.updateEngineRPM(this.player.speed);
 
-        // World displacement
+        // Altitude physics: climb rate proportional to sin(pitchRad)
         const speedMPS = this.player.speed * 0.45;
+        const vertSpeedMPS = sinPitch * speedMPS * 0.38;
+        this.player.alt = Math.max(5, Math.min(95, this.player.alt + vertSpeedMPS * dt));
+
+        // World displacement
+        const horizSpeedMPS = cosPitch * speedMPS;
         const headingRad = (this.player.heading * Math.PI) / 180;
-        this.player.x += Math.sin(headingRad) * speedMPS * dt;
-        this.player.y += Math.cos(headingRad) * speedMPS * dt;
+        this.player.x += Math.sin(headingRad) * horizSpeedMPS * dt;
+        this.player.y += Math.cos(headingRad) * horizSpeedMPS * dt;
         this.flightDistance += speedMPS * dt;
 
         // Check temporary shield armor expiry
@@ -867,41 +929,12 @@ class DogfightGame {
         }
       }
 
-      // Lock-On Detection & Lead Aim Calculation:
-      // Search for the closest aircraft in front near center boresight (480, 270)
-      let bestTarget = null;
-      let minCrosshairDist = 85; // Lock radius pixels
-
+      // Target Locking is disabled: Dogfight relies strictly on manual gunsight aim!
+      this.lockedTarget = null;
+      this.leadPoint = null;
+      this.targetWasLocked = false;
       for (let p of otherList) {
         p.isLocked = false;
-        if (!p.isDead && p.inFront && p.dist < 800) {
-          const dCenter = Math.hypot(480 - p.screenX, 270 - p.screenY);
-          if (dCenter < minCrosshairDist) {
-            minCrosshairDist = dCenter;
-            bestTarget = p;
-          }
-        }
-      }
-
-      if (bestTarget) {
-        bestTarget.isLocked = true;
-        this.lockedTarget = bestTarget;
-        if (!this.targetWasLocked) {
-          this.audio.playLockOn();
-        }
-        this.targetWasLocked = true;
-
-        // Compute predictive lead reticle based on target's speed & roll
-        const leadDist = Math.max(15, bestTarget.dist / 35);
-        const leadRad = ((bestTarget.heading - this.player.heading) * Math.PI) / 180;
-        this.leadPoint = {
-          x: bestTarget.screenX + Math.sin(leadRad) * leadDist,
-          y: bestTarget.screenY - Math.cos(leadRad) * leadDist,
-        };
-      } else {
-        this.lockedTarget = null;
-        this.leadPoint = null;
-        this.targetWasLocked = false;
       }
 
         // Combat Airspace Boundary Tracking (Arena Radius = 1200m)

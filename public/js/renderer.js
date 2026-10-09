@@ -187,7 +187,7 @@ class DogfightRenderer {
     this.drawExplosions(ctx, dt);
 
     // 8. Fixed Center Reticle & Lead Gunsight
-    this.drawCockpitReticle(ctx, state.lockedTarget, state.leadPoint, now);
+    this.drawCockpitReticle(ctx, state.lockedTarget, state.leadPoint, now, state.pitch);
 
     // 9. Flight Instruments (Airspeed Tape, Altimeter Tape, Compass Ribbon)
     this.drawAirspeedTape(ctx, state.speed || 95, state.throttle || 1.0);
@@ -254,11 +254,32 @@ class DogfightRenderer {
     ctx.save();
     const cx = this.width / 2;
     const cy = this.height / 2;
-    const pitchOffset = pitch * 4.5;
+
+    // Continuous pitch in [0, 360) for vertical aerobatic loops (ตีลังกา)
+    const normPitch = (((pitch || 0) % 360) + 360) % 360;
+    const isInverted = normPitch > 90 && normPitch < 270;
+
+    // Effective horizon elevation on screen (-90° to +90°)
+    let effectivePitchDeg;
+    if (normPitch <= 90) {
+      effectivePitchDeg = normPitch; // 0° to 90°
+    } else if (normPitch <= 270) {
+      effectivePitchDeg = 180 - normPitch; // 90° down to -90° (inverted)
+    } else {
+      effectivePitchDeg = normPitch - 360; // -90° up to 0°
+    }
+
+    const pitchOffset = effectivePitchDeg * 5.0;
     const rollRad = (roll * Math.PI) / 180;
 
     ctx.translate(cx, cy + pitchOffset);
-    ctx.rotate(-rollRad);
+    if (isInverted) {
+      // Inverted flight: Ground is ABOVE, Sky is BELOW!
+      ctx.rotate(Math.PI - rollRad);
+    } else {
+      // Normal upright flight: Sky is ABOVE, Ground is BELOW!
+      ctx.rotate(-rollRad);
+    }
 
     const extent = 1800;
 
@@ -315,13 +336,13 @@ class DogfightRenderer {
 
     // 3D Terrain Landmarks (Airbase, Mountains, Beacons, Boundaries)
     if (myPlane) {
-      this.draw3DTerrain(ctx, myPlane, now || performance.now());
+      this.draw3DTerrain(ctx, myPlane, now || performance.now(), isInverted);
     }
 
     ctx.restore();
   }
 
-  draw3DTerrain(ctx, myPlane, now) {
+  draw3DTerrain(ctx, myPlane, now, isInverted = false) {
     if (!myPlane) return;
     const myHRad = (myPlane.heading * Math.PI) / 180;
     const sinH = Math.sin(myHRad);
@@ -337,7 +358,7 @@ class DogfightRenderer {
       if (relZ <= 15) return null; // Behind plane
 
       const k = 620 / Math.max(20, relZ);
-      const hx = relX * k;
+      const hx = (isInverted ? -1 : 1) * relX * k;
       const hy = Math.max(-500, (alt - wz) * 8.0 * k); // Altitude relative drop
       return { x: hx, y: hy, z: relZ };
     };
@@ -598,34 +619,50 @@ class DogfightRenderer {
 
   drawOtherAircraft(ctx, otherPlayers, myPlane, pitch, roll, now) {
     if (!myPlane) return;
-    const myHRad = (myPlane.heading * Math.PI) / 180;
-    const sinH = Math.sin(myHRad);
-    const cosH = Math.cos(myHRad);
-    const pitchOffset = pitch * 4.5;
+    const hRad = (myPlane.heading * Math.PI) / 180;
+    const pRad = ((pitch || 0) * Math.PI) / 180;
+    const rRad = ((roll || 0) * Math.PI) / 180;
+
+    const sinH = Math.sin(hRad), cosH = Math.cos(hRad);
+    const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
+    const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
+
+    const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
+    const Rx = cosH * cosR + sinH * sinP * sinR;
+    const Ry = -sinH * cosR + cosH * sinP * sinR;
+    const Rz = -cosP * sinR;
+    const Ux = -cosH * sinR + sinH * sinP * cosR;
+    const Uy = sinH * sinR + cosH * sinP * cosR;
+    const Uz = cosP * cosR;
 
     for (let p of otherPlayers) {
-      if (p.isDead) continue;
+      if (p.isDead) {
+        p.inFront = false;
+        continue;
+      }
 
       // Delta vector in world coords
       const dx = p.x - myPlane.x;
       const dy = p.y - myPlane.y;
-      const dAlt = (p.alt - myPlane.alt) * 8.0;
+      const dz = (p.alt - myPlane.alt) * 8.0;
 
-      // Rotate into aircraft body reference frame
-      const relZ = dx * sinH + dy * cosH; // Forward (+ = ahead, - = behind)
-      const relX = dx * cosH - dy * sinH; // Lateral (+ = right, - = left)
-      const relY = dAlt;                  // Vertical (+ = above, - = below)
+      // 3D body reference frame
+      const relZ = dx * Fx + dy * Fy + dz * Fz; // Forward (+ = ahead)
+      const relX = dx * Rx + dy * Ry + dz * Rz; // Lateral (+ = right)
+      const relY = dx * Ux + dy * Uy + dz * Uz; // Vertical (+ = up)
 
       const dist = Math.hypot(dx, dy);
 
-      // Only draw if in front of player (relZ > 12)
-      if (relZ <= 12) continue;
+      // Only draw if in front of player (relZ > 10)
+      if (relZ <= 10) {
+        p.inFront = false;
+        continue;
+      }
 
       // Perspective projection
-      const fx = 620;
-      const fy = 620;
-      const sx = 480 + (relX / Math.max(25, relZ)) * fx;
-      const sy = 270 - (relY / Math.max(25, relZ)) * fy + pitchOffset;
+      const k = 620 / Math.max(20, relZ);
+      const sx = 480 + relX * k;
+      const sy = 270 - relY * k;
 
       // Save screen coords on player object for hit testing & HUD
       p.screenX = sx;
@@ -642,8 +679,8 @@ class DogfightRenderer {
 
       // Case A: Distant target (dist > 450m) -> Tactical Diamond Bracket
       if (dist > 450) {
-        const isLocked = p.isLocked;
-        ctx.strokeStyle = isLocked ? '#ef4444' : (p.color || '#38bdf8');
+        const inGunRange = dist < 500;
+        ctx.strokeStyle = inGunRange ? '#10b981' : (p.color || '#38bdf8');
         ctx.lineWidth = 1.8;
         ctx.shadowColor = ctx.strokeStyle;
         ctx.shadowBlur = 6;
@@ -664,9 +701,9 @@ class DogfightRenderer {
         ctx.textAlign = 'center';
         ctx.fillText(`[LV.${p.level || 1}] ${p.callsign}`, sx, sy - 18);
 
-        ctx.fillStyle = '#38bdf8';
+        ctx.fillStyle = inGunRange ? '#10b981' : '#64748b';
         ctx.font = '10px monospace';
-        ctx.fillText(`${Math.round(dist)}m`, sx, sy + 25);
+        ctx.fillText(inGunRange ? `${Math.round(dist)}m [IN RANGE]` : `${Math.round(dist)}m`, sx, sy + 25);
 
         ctx.restore();
         continue;
@@ -677,9 +714,13 @@ class DogfightRenderer {
       ctx.translate(sx, sy);
       ctx.scale(scaleFactor, scaleFactor);
 
-      // Tilt according to remote plane's roll
+      // Tilt according to remote plane's roll & pitch
       const remoteRollRad = ((p.roll || 0) * Math.PI) / 180;
       ctx.rotate(remoteRollRad * 0.7);
+      if (p.pitch !== undefined) {
+        const pCos = Math.cos(((p.pitch || 0) * Math.PI) / 180);
+        ctx.scale(1.0, pCos < -0.1 ? -1.0 : 1.0);
+      }
 
       // 1. Invulnerability / Armor Shield Bubble
       const hasAnyShield = p.hasSpawnProtection || (p.shieldHp && p.shieldHp > 0) || p.hasShield;
@@ -809,20 +850,19 @@ class DogfightRenderer {
     }
   }
 
-  drawCockpitReticle(ctx, lockedTarget, leadPoint, now) {
+  drawCockpitReticle(ctx, lockedTarget, leadPoint, now, pitch) {
     const cx = 480;
     const cy = 270;
     ctx.save();
 
-    // 1. Center Boresight Crosshair
-    const isLocked = !!lockedTarget;
-    ctx.strokeStyle = isLocked ? '#ef4444' : '#38bdf8';
+    // 1. Center Boresight Crosshair (Dogfight Gunsight)
+    ctx.strokeStyle = '#38bdf8';
     ctx.lineWidth = 1.8;
     ctx.shadowColor = ctx.strokeStyle;
     ctx.shadowBlur = 6;
 
     // Center dot
-    ctx.fillStyle = isLocked ? '#ef4444' : '#ffffff';
+    ctx.fillStyle = '#ffffff';
     ctx.beginPath();
     ctx.arc(cx, cy, 3, 0, Math.PI * 2);
     ctx.fill();
@@ -840,57 +880,29 @@ class DogfightRenderer {
     ctx.moveTo(cx, cy + 28); ctx.lineTo(cx, cy + 36);
     ctx.stroke();
 
-    // 2. Lock-on Box & Indicator
-    if (lockedTarget && lockedTarget.screenX !== undefined) {
-      const tx = lockedTarget.screenX;
-      const ty = lockedTarget.screenY;
-      const pulseSize = 36 + Math.sin(now * 0.02) * 4;
+    // Effective Gun Range Label (< 500m)
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.75)';
+    ctx.font = 'bold 9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('GUNS <500M', cx, cy + 42);
 
-      ctx.strokeStyle = '#ef4444';
-      ctx.lineWidth = 2.2;
-      ctx.shadowColor = '#ef4444';
-      ctx.shadowBlur = 10;
-
-      // Lock corners [ ]
-      const cLen = 10;
-      ctx.beginPath();
-      // Top-Left
-      ctx.moveTo(tx - pulseSize, ty - pulseSize + cLen);
-      ctx.lineTo(tx - pulseSize, ty - pulseSize);
-      ctx.lineTo(tx - pulseSize + cLen, ty - pulseSize);
-      // Top-Right
-      ctx.moveTo(tx + pulseSize - cLen, ty - pulseSize);
-      ctx.lineTo(tx + pulseSize, ty - pulseSize);
-      ctx.lineTo(tx + pulseSize, ty - pulseSize + cLen);
-      // Bottom-Right
-      ctx.moveTo(tx + pulseSize, ty + pulseSize - cLen);
-      ctx.lineTo(tx + pulseSize, ty + pulseSize);
-      ctx.lineTo(tx + pulseSize - cLen, ty + pulseSize);
-      // Bottom-Left
-      ctx.moveTo(tx - pulseSize + cLen, ty + pulseSize);
-      ctx.lineTo(tx - pulseSize, ty + pulseSize);
-      ctx.lineTo(tx - pulseSize, ty + pulseSize - cLen);
-      ctx.stroke();
-
-      // LOCK 100% Text
+    // Pitch Attitude Readout (displays loop angle / inverted status)
+    const normPitch = (((pitch || 0) % 360) + 360) % 360;
+    let pitchText = `${Math.round(normPitch)}°`;
+    if (normPitch > 75 && normPitch < 105) {
+      pitchText = '90° ⬆ ZENITH';
+      ctx.fillStyle = '#f59e0b';
+    } else if (normPitch >= 165 && normPitch <= 195) {
+      pitchText = '180° 🔄 INVERTED (ตีลังกา)';
+      ctx.fillStyle = '#38bdf8';
+    } else if (normPitch > 255 && normPitch < 285) {
+      pitchText = '270° ⬇ NADIR (DIVE)';
       ctx.fillStyle = '#ef4444';
-      ctx.font = 'bold 12px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`LOCKED • ${lockedTarget.callsign}`, tx, ty - pulseSize - 8);
+    } else {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
     }
-
-    // 3. Lead Reticle (predictive aim assist)
-    if (leadPoint) {
-      ctx.strokeStyle = '#10b981';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(leadPoint.x, leadPoint.y, 8, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = '#10b981';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('LEAD', leadPoint.x, leadPoint.y + 18);
-    }
+    ctx.font = 'bold 10px monospace';
+    ctx.fillText(pitchText, cx, cy - 34);
 
     ctx.restore();
   }
@@ -1285,27 +1297,37 @@ class DogfightRenderer {
   draw3DItems(ctx, items, myPlane, pitch, roll, now) {
     if (!items || !items.length || !myPlane) return;
 
-    const headingRad = (myPlane.heading * Math.PI) / 180;
-    const sinH = Math.sin(headingRad);
-    const cosH = Math.cos(headingRad);
-    const pitchOffset = (pitch || 0) * 12;
+    const hRad = (myPlane.heading * Math.PI) / 180;
+    const pRad = ((pitch || 0) * Math.PI) / 180;
+    const rRad = ((roll || 0) * Math.PI) / 180;
+
+    const sinH = Math.sin(hRad), cosH = Math.cos(hRad);
+    const sinP = Math.sin(pRad), cosP = Math.cos(pRad);
+    const sinR = Math.sin(rRad), cosR = Math.cos(rRad);
+
+    const Fx = sinH * cosP, Fy = cosH * cosP, Fz = sinP;
+    const Rx = cosH * cosR + sinH * sinP * sinR;
+    const Ry = -sinH * cosR + cosH * sinP * sinR;
+    const Rz = -cosP * sinR;
+    const Ux = -cosH * sinR + sinH * sinP * cosR;
+    const Uy = sinH * sinR + cosH * sinP * cosR;
+    const Uz = cosP * cosR;
 
     for (let it of items) {
       const dx = it.x - myPlane.x;
       const dy = it.y - myPlane.y;
-      const dAlt = (it.alt - myPlane.alt) * 8.0;
+      const dz = (it.alt - myPlane.alt) * 8.0;
 
-      const relZ = dx * sinH + dy * cosH;
-      const relX = dx * cosH - dy * sinH;
-      const relY = dAlt;
+      const relZ = dx * Fx + dy * Fy + dz * Fz;
+      const relX = dx * Rx + dy * Ry + dz * Rz;
+      const relY = dx * Ux + dy * Uy + dz * Uz;
 
       const dist = Math.hypot(dx, dy);
       if (relZ <= 10) continue; // Behind player
 
-      const fx = 620;
-      const fy = 620;
-      const sx = 480 + (relX / Math.max(20, relZ)) * fx;
-      const sy = 270 - (relY / Math.max(20, relZ)) * fy + pitchOffset;
+      const k = 620 / Math.max(20, relZ);
+      const sx = 480 + relX * k;
+      const sy = 270 - relY * k;
 
       if (sx < -60 || sx > this.width + 60 || sy < -60 || sy > this.height + 60) continue;
 
@@ -1411,7 +1433,8 @@ class DogfightRenderer {
     const cx = 480;
     const skinColor = (myPlane && myPlane.color) ? myPlane.color : '#38bdf8';
     const rollTilt = (roll || 0) * -0.0025; // G-force cockpit inertia lag
-    const pitchShift = (pitch || 0) * 1.5;
+    const pRad = (((pitch || 0) % 360) * Math.PI) / 180;
+    const pitchShift = Math.sin(pRad) * 20; // Smooth cyclic inertia shift during 360 loop
 
     // 1. Sleek 1st-Person Fighter Jet Nose Cone (Extending forward from bottom center)
     ctx.save();

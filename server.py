@@ -553,6 +553,13 @@ class GameServer:
                         target = current_room.players[target_id]
                         # Target cannot take damage if in 3s spawn protection or dead
                         if not target.is_dead and now > target.spawn_protection_until:
+                            # Enforce Gun Range: Strictly less than 500 meters (< 500m)
+                            # (With 30m grace tolerance for network lag)
+                            hit_dist = math.hypot(player.x - target.x, player.y - target.y)
+                            if hit_dist > 530.0:
+                                print(f"[Hit Ignored] {player.callsign} tried to hit {target.callsign} out of range ({hit_dist:.1f}m > 500m)")
+                                continue
+
                             # 1. Absorb damage using temporary shield armor if active (+20 HP shield)
                             shield_absorbed = 0
                             if now < target.shield_until and target.shield_hp > 0:
