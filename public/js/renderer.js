@@ -609,9 +609,7 @@ class DogfightRenderer {
       // Relative horizontal bearing
       const myHRad = (myPlane.heading * Math.PI) / 180;
       const targetBearing = Math.atan2(dx, dy);
-      let relH = targetBearing - myHRad;
-      while (relH > Math.PI) relH -= Math.PI * 2;
-      while (relH < -Math.PI) relH -= Math.PI * 2;
+      let relH = ((targetBearing - myHRad + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
 
       // Relative elevation
       const dAlt = (p.alt || 50) - (myPlane.alt || 50);
@@ -947,6 +945,8 @@ class DogfightRenderer {
     const cy = 270;
     ctx.save();
 
+    const isLocked = !!lockedTarget;
+
     // 0. Radar Acquisition Zone Ring (180px zone)
     ctx.strokeStyle = isLocked ? 'rgba(239, 68, 68, 0.45)' : 'rgba(56, 189, 248, 0.25)';
     ctx.lineWidth = 1.2;
@@ -957,7 +957,6 @@ class DogfightRenderer {
     ctx.setLineDash([]);
 
     // 1. Center Boresight Crosshair (Dogfight Gunsight)
-    const isLocked = !!lockedTarget;
     ctx.strokeStyle = isLocked ? '#ef4444' : '#38bdf8';
     ctx.lineWidth = 1.8;
     ctx.shadowColor = ctx.strokeStyle;
