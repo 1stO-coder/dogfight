@@ -505,12 +505,12 @@ class DogfightGame {
     let hitScreenX = 480;
     let hitScreenY = 270;
 
-    // Case 1: Locked target engagement (target within <= 480m) - Guaranteed Auto-Aim Hit!
+    // Case 1: Locked target engagement (target strictly within <= 200m) - Guaranteed Auto-Aim Hit!
     if (
       this.lockedTarget &&
       !this.lockedTarget.isDead &&
       !this.lockedTarget.hasSpawnProtection &&
-      this.lockedTarget.dist <= 480
+      this.lockedTarget.dist <= 200
     ) {
       hitTarget = this.lockedTarget;
       hitScreenX = this.lockedTarget.screenX !== undefined ? this.lockedTarget.screenX : 480;
@@ -586,7 +586,7 @@ class DogfightGame {
       this.audio.playHitTarget();
       this.renderer.addExplosion(hitScreenX, hitScreenY, 0.75);
       this.renderer.triggerFlash(70, 'rgba(255, 176, 46, 0.35)');
-      const dmg = this.player.hasDamageBoost ? 36 : 18; // High lethal damage!
+      const dmg = this.player.hasDamageBoost ? 7.2 : 3.6; // 20% cannon damage (was 18 / 36), allowing evasion & dogfight escapes
       this.network.sendHit(hitTarget.id, dmg);
     } else {
       const sprayX = 480 + (Math.random() - 0.5) * 16;
@@ -619,15 +619,20 @@ class DogfightGame {
         if (this.player.isDead) {
           this.network.sendRespawnRequest();
 
-          // Client-side failsafe watchdog: if server response delayed > 1.5s, self-restore safely
+          // Client-side failsafe watchdog: if server response delayed > 1.5s, self-restore safely at map edge
           setTimeout(() => {
             if (this.player.isDead) {
-              console.warn('[Failsafe] Auto-respawning local player safely');
+              console.warn('[Failsafe] Auto-respawning local player safely at map perimeter');
               this.player.isDead = false;
               this.player.level = 1;
               this.player.hp = 100;
               this.player.maxHp = 100;
+              const fAngle = Math.random() * 2 * Math.PI;
+              const fDist = 1000 + Math.random() * 90;
+              this.player.x = fDist * Math.cos(fAngle);
+              this.player.y = fDist * Math.sin(fAngle);
               this.player.alt = 60;
+              this.player.heading = ((Math.atan2(-this.player.x, -this.player.y) * 180) / Math.PI + 360) % 360;
               this.player.pitch = 0;
               this.player.roll = 0;
               this.player.speed = 95;
@@ -949,16 +954,16 @@ class DogfightGame {
         }
       }
 
-      // Target Lock-On Detection: Very accessible up to <= 450 meters with Sticky Lock!
+      // Target Lock-On Detection: Strictly within <= 200 meters with Sticky Lock!
       let bestTarget = null;
-      let minCrosshairDist = 180; // Generous 180px acquisition zone
+      let minCrosshairDist = 180; // 180px acquisition zone
 
-      // 1. Sticky Lock: Retain currently locked target if still in front view and in combat range
+      // 1. Sticky Lock: Retain currently locked target if still in front view and within <= 200m
       if (
         this.lockedTarget &&
         !this.lockedTarget.isDead &&
         !this.lockedTarget.hasSpawnProtection &&
-        this.lockedTarget.dist <= 480 &&
+        this.lockedTarget.dist <= 200 &&
         this.lockedTarget.inFront
       ) {
         const dCurrent = Math.hypot(480 - (this.lockedTarget.screenX || 480), 270 - (this.lockedTarget.screenY || 270));
@@ -967,11 +972,11 @@ class DogfightGame {
         }
       }
 
-      // 2. If no target retained, acquire closest target in front within 180px crosshair radius
+      // 2. If no target retained, acquire closest target in front within 180px crosshair radius and <= 200m
       if (!bestTarget) {
         for (let p of otherList) {
           p.isLocked = false;
-          if (!p.isDead && !p.hasSpawnProtection && p.inFront && p.dist <= 450) {
+          if (!p.isDead && !p.hasSpawnProtection && p.inFront && p.dist <= 200) {
             const dCenter = Math.hypot(480 - p.screenX, 270 - p.screenY);
             if (dCenter < minCrosshairDist) {
               minCrosshairDist = dCenter;

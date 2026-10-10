@@ -69,19 +69,19 @@ def get_terrain_height(x: float, y: float) -> float:
 
 
 def get_safe_spawn_point():
-    """Find safe coordinates in open airspace away from mountain peaks across the entire map (80m to 1050m)"""
-    for _ in range(60):
+    """Find safe coordinates at the map perimeter / edge (1000m to 1090m) facing inward toward battlefield center"""
+    for _ in range(80):
         angle = random.random() * 2 * math.pi
-        dist = 80.0 + random.random() * 970.0  # 80m to 1050m across all sectors
+        dist = 1000.0 + random.random() * 90.0  # 1000m to 1090m (perimeter of 1200m arena)
         x = dist * math.cos(angle)
         y = dist * math.sin(angle)
         ground_h = get_terrain_height(x, y)
         if ground_h < 5.0:
-            alt = 45.0 + random.random() * 35.0  # Safe cruising 45m - 80m
+            alt = 55.0 + random.random() * 25.0  # Safe cruising 55m - 80m
             center_angle = math.degrees(math.atan2(-x, -y))
-            heading = (center_angle + (random.random() - 0.5) * 80.0 + 360) % 360
+            heading = (center_angle + (random.random() - 0.5) * 50.0 + 360) % 360
             return round(x, 1), round(y, 1), round(alt, 1), round(heading, 1)
-    return 0.0, -150.0, 60.0, 0.0
+    return 0.0, -1040.0, 60.0, 0.0
 
 
 class Item:
@@ -537,13 +537,19 @@ class GameServer:
                         )
                     continue
 
-                # 5. Hit Detection & Damage Validation
+                # 5. Hit Detection & Damage Validation (Gun damage set to 20% = 3.6 HP)
                 if msg_type == "hit":
                     target_id = data.get("targetId")
-                    raw_damage = int(data.get("damage", 18))
+                    try:
+                        raw_damage = float(data.get("damage", 3.6))
+                    except (ValueError, TypeError):
+                        raw_damage = 3.6
+                    # Clamp raw damage to 20% baseline (3.6) if unscaled legacy values sent
+                    if raw_damage > 8.0:
+                        raw_damage = 3.6
                     now = time.time()
                     # 2x damage if damage boost buff is active!
-                    effective_damage = (raw_damage * 2) if (now < player.damage_boost_until) else raw_damage
+                    effective_damage = round((raw_damage * 2.0) if (now < player.damage_boost_until) else raw_damage, 1)
 
                     if (
                         target_id
@@ -561,32 +567,33 @@ class GameServer:
                                 continue
 
                             # 1. Absorb damage using temporary shield armor if active (+20 HP shield)
-                            shield_absorbed = 0
+                            shield_absorbed = 0.0
                             if now < target.shield_until and target.shield_hp > 0:
                                 shield_absorbed = min(target.shield_hp, effective_damage)
-                                target.shield_hp -= shield_absorbed
-                                remaining_damage = effective_damage - shield_absorbed
+                                target.shield_hp = round(target.shield_hp - shield_absorbed, 1)
+                                remaining_damage = round(effective_damage - shield_absorbed, 1)
                             else:
                                 remaining_damage = effective_damage
 
                             # 2. Apply remaining damage to hull HP
-                            target.hp = max(0, target.hp - remaining_damage)
+                            target.hp = max(0.0, round(target.hp - remaining_damage, 1))
 
                             # Notify room of damage
                             await current_room.broadcast(
                                 {
                                     "type": "player_damaged",
                                     "targetId": target_id,
-                                    "hp": target.hp,
-                                    "shieldHp": target.shield_hp if (now < target.shield_until) else 0,
+                                    "hp": round(target.hp, 1),
+                                    "shieldHp": round(target.shield_hp, 1) if (now < target.shield_until) else 0,
                                     "damage": effective_damage,
-                                    "shieldAbsorbed": shield_absorbed,
+                                    "shieldAbsorbed": round(shield_absorbed, 1),
                                     "attackerId": player_id,
                                 }
                             )
 
                             # Check for Kill
-                            if target.hp <= 0 and not target.is_dead:
+                            if target.hp <= 0.05 and not target.is_dead:
+                                target.hp = 0.0
                                 target.is_dead = True
                                 target.respawn_at = now + 3.0  # 3 seconds countdown
                                 target.deaths += 1

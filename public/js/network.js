@@ -117,7 +117,7 @@ class DogfightNetworkManager {
     this.send({ type: 'fire' });
   }
 
-  sendHit(targetId, damage = 12) {
+  sendHit(targetId, damage = 3.6) {
     this.send({
       type: 'hit',
       targetId: targetId,

@@ -1452,7 +1452,7 @@ class DogfightRenderer {
       ctx.shadowBlur = 0;
     }
 
-    // 2. Lock-on Box & Indicator (Active when enemy is within <= 450m)
+    // 2. Lock-on Box & Indicator (Active when enemy is within <= 200m)
     if (lockedTarget && lockedTarget.screenX !== undefined) {
       const tx = lockedTarget.screenX;
       const ty = lockedTarget.screenY;
@@ -1515,11 +1515,11 @@ class DogfightRenderer {
       ctx.fillText('LEAD', leadPoint.x, leadPoint.y + 18);
     }
 
-    // Range Label: Lock at <= 450m, Guns hit < 500m
+    // Range Label: Lock at <= 200m, Guns hit < 500m
     ctx.fillStyle = isLocked ? '#ef4444' : 'rgba(56, 189, 248, 0.75)';
     ctx.font = 'bold 9px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(isLocked ? 'TARGET ACQUIRED • AUTO-AIM ACTIVE (LOCK ≤450M)' : 'RADAR LOCK ≤450M • AUTO-LEAD READY', cx, cy + 42);
+    ctx.fillText(isLocked ? 'TARGET ACQUIRED • AUTO-AIM ACTIVE (LOCK ≤200M)' : 'RADAR LOCK ≤200M • AUTO-LEAD READY', cx, cy + 42);
 
     // Pitch Attitude Readout (displays loop angle / inverted status)
     const normPitch = (((pitch || 0) % 360) + 360) % 360;
