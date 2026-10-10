@@ -50,10 +50,10 @@ class DogfightGame {
       kills: 0,
       deaths: 0,
       score: 0,
-      magAmmo: 50,
-      maxMag: 50,
-      reserveAmmo: 150,
-      maxReserve: 400,
+      magAmmo: 150,
+      maxMag: 150,
+      reserveAmmo: 300,
+      maxReserve: 600,
     };
 
     // Tactical In-Game Items & Terrain Proximity
@@ -359,11 +359,13 @@ class DogfightGame {
           this.showPowerupSplash('🛡️ TEMPORARY ARMOR +20 HP!', 'เพิ่มเกราะ +20 เลือดชั่วคราว • 2 MINUTES DURATION');
         } else if (data.itemType === 'ammo') {
           this.audio.playItemPickup('ammo');
-          this.player.reserveAmmo = Math.min(this.player.maxReserve, this.player.reserveAmmo + 100);
-          this.showPowerupSplash('📦 AMMO RESTOCKED!', '+100 ROUNDS OF 20MM CANNON AMMO');
-          if (this.player.magAmmo <= 0 && !this.isReloading) {
-            this.triggerReload();
-          }
+          // Instantly cancel any ongoing reload and replenish gun to full 150 bullets
+          this.isReloading = false;
+          this.reloadTimeRemaining = 0.0;
+          this.player.magAmmo = 150;
+          this.player.reserveAmmo = Math.min(this.player.maxReserve, this.player.reserveAmmo + 150);
+          this.showPowerupSplash('📦 AMMO RESTOCKED +150!', 'เติมกระสุนเต็มแม็ก 150 นัด พร้อมยิงทันที!');
+          this.addKillFeedEntry('SUPPLY AIRDROP', `📦 ${this.player.callsign} REPLENISHED +150 AMMO!`);
         }
       } else {
         const p = this.otherPlayers[data.collectorId];
@@ -473,8 +475,8 @@ class DogfightGame {
         this.player.spawnProtectionUntil = performance.now() + 3000;
         this.player.hasDamageBoost = false;
         this.player.damageBoostUntil = 0;
-        this.player.magAmmo = 50;
-        this.player.reserveAmmo = 150;
+        this.player.magAmmo = 150;
+        this.player.reserveAmmo = 300;
         this.isReloading = false;
         this.reloadTimeRemaining = 0.0;
         this.player.x = data.x;
@@ -869,7 +871,7 @@ class DogfightGame {
     if (this.dom.hudAmmoText) {
       if (this.player.magAmmo <= 0) {
         this.dom.hudAmmoText.className = 'ammo-empty';
-      } else if (this.player.magAmmo <= 15) {
+      } else if (this.player.magAmmo <= 35) {
         this.dom.hudAmmoText.className = 'ammo-low';
       } else {
         this.dom.hudAmmoText.className = 'ammo-good';

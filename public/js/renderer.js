@@ -1431,7 +1431,7 @@ class DogfightRenderer {
     }
   }
 
-  drawCockpitReticle(ctx, lockedTarget, leadPoint, now, pitch, magAmmo = 50, reserveAmmo = 150, isReloading = false, reloadTimeRem = 0) {
+  drawCockpitReticle(ctx, lockedTarget, leadPoint, now, pitch, magAmmo = 150, reserveAmmo = 300, isReloading = false, reloadTimeRem = 0) {
     const cx = 480;
     const cy = 270;
     ctx.save();
@@ -1582,9 +1582,9 @@ class DogfightRenderer {
         ctx.fillStyle = '#ef4444';
         ctx.fillText(`⚠️ EMPTY (PRESS 'R' TO RELOAD)`, cx, cy + 60);
       } else {
-        const ammoColor = magAmmo <= 15 ? '#ef4444' : '#10b981';
+        const ammoColor = magAmmo <= 35 ? '#ef4444' : '#10b981';
         ctx.fillStyle = ammoColor;
-        ctx.fillText(`AMMO: ${magAmmo}/50  •  RES: ${reserveAmmo}`, cx, cy + 60);
+        ctx.fillText(`AMMO: ${magAmmo}/150  •  RES: ${reserveAmmo}`, cx, cy + 60);
       }
     }
 
@@ -2069,7 +2069,7 @@ class DogfightRenderer {
         colMain = '#eab308';
         colGlow = 'rgba(234, 179, 8, 0.35)';
         icon = '📦';
-        title = 'AMMO CRATE +100';
+        title = 'AMMO CRATE +150';
       }
 
       // Vertical beacon beam

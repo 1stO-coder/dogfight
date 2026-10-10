@@ -124,8 +124,8 @@ class Player:
         self.shield_until = 0.0  # Temporary armor expiry (2 minutes)
         self.spawn_protection_until = time.time() + 3.0  # 3s spawn invulnerability
         self.damage_boost_until = 0.0  # 2x cannon damage buff (lasts 120s = 2 min)
-        self.mag_ammo = 50
-        self.reserve_ammo = 150
+        self.mag_ammo = 150
+        self.reserve_ammo = 300
         self.is_dead = False
         self.respawn_at = 0.0
         self.kills = 0
@@ -223,7 +223,9 @@ class Room:
                     player.shield_hp = min(40, player.shield_hp + 20)  # +20 temporary HP shield
                     player.shield_until = now + 120.0  # 2 minutes duration
                 elif item.type == "ammo":
-                    player.reserve_ammo = min(400, player.reserve_ammo + 100)
+                    # Directly replenish active ammo in gun to full 150 (not just capacity) and add +150 to reserve
+                    player.mag_ammo = 150
+                    player.reserve_ammo = min(600, player.reserve_ammo + 150)
                 return item
         return None
 
@@ -501,8 +503,8 @@ class GameServer:
                         player.shield_hp = 0
                         player.shield_until = 0.0
                         player.damage_boost_until = 0.0
-                        player.mag_ammo = 50
-                        player.reserve_ammo = 150
+                        player.mag_ammo = 150
+                        player.reserve_ammo = 300
                         player.respawn_at = 0.0
                         player.spawn_protection_until = now + 3.0
                         x, y, alt, heading = get_safe_spawn_point()
@@ -696,8 +698,8 @@ class GameServer:
                         p.max_hp = 100
                         p.hp = 100
                         p.damage_boost_until = 0.0
-                        p.mag_ammo = 50
-                        p.reserve_ammo = 150
+                        p.mag_ammo = 150
+                        p.reserve_ammo = 300
                         p.respawn_at = 0.0
                         p.shield_hp = 0
                         p.shield_until = 0.0
