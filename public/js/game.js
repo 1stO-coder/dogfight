@@ -50,6 +50,10 @@ class DogfightGame {
       kills: 0,
       deaths: 0,
       score: 0,
+      magAmmo: 50,
+      maxMag: 50,
+      reserveAmmo: 150,
+      maxReserve: 400,
     };
 
     // Tactical In-Game Items & Terrain Proximity
@@ -67,6 +71,11 @@ class DogfightGame {
     this.fireRateMs = 80; // Rapid high-cyclic twin cannon fire
     this.targetWasLocked = false;
     this.flightDistance = 0;
+
+    // Ammo & 5s Reload System ("ถ้ายิงหมดแม็ก ให้มี reload 5 วิ")
+    this.isReloading = false;
+    this.reloadTimeRemaining = 0.0;
+    this.reloadDuration = 5.0;
 
     // Network Sync Timing
     this.lastNetworkSyncTime = 0;
@@ -105,6 +114,11 @@ class DogfightGame {
       hudShieldBadge: document.getElementById('hud-shield-badge'),
       hudDmgBadge: document.getElementById('hud-dmg-badge'),
       hudLevelBadge: document.getElementById('hud-level-badge'),
+      hudMagAmmo: document.getElementById('hud-mag-ammo'),
+      hudResAmmo: document.getElementById('hud-res-ammo'),
+      hudAmmoText: document.getElementById('hud-ammo-text'),
+      hudReloadStatus: document.getElementById('hud-reload-status'),
+      btnManualReload: document.getElementById('btn-manual-reload'),
       inputCallsign: document.getElementById('input-callsign'),
       btnJoin: document.getElementById('btn-join'),
       colorPicker: document.querySelectorAll('.color-choice'),
@@ -127,6 +141,18 @@ class DogfightGame {
         btn.classList.add('active');
         this.player.color = btn.getAttribute('data-color') || '#38bdf8';
       });
+    });
+
+    // Manual Reload Button & Keyboard 'R' Listener
+    if (this.dom.btnManualReload) {
+      this.dom.btnManualReload.addEventListener('click', () => {
+        this.triggerReload();
+      });
+    }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'r' || e.key === 'R') {
+        this.triggerReload();
+      }
     });
 
     // Invert Pitch / Roll
@@ -331,6 +357,13 @@ class DogfightGame {
           this.player.hasShield = true;
           this.player.shieldUntil = performance.now() + 120000;
           this.showPowerupSplash('🛡️ TEMPORARY ARMOR +20 HP!', 'เพิ่มเกราะ +20 เลือดชั่วคราว • 2 MINUTES DURATION');
+        } else if (data.itemType === 'ammo') {
+          this.audio.playItemPickup('ammo');
+          this.player.reserveAmmo = Math.min(this.player.maxReserve, this.player.reserveAmmo + 100);
+          this.showPowerupSplash('📦 AMMO RESTOCKED!', '+100 ROUNDS OF 20MM CANNON AMMO');
+          if (this.player.magAmmo <= 0 && !this.isReloading) {
+            this.triggerReload();
+          }
         }
       } else {
         const p = this.otherPlayers[data.collectorId];
@@ -393,7 +426,7 @@ class DogfightGame {
       // If local player scored the kill!
       if (data.killerId === this.player.id) {
         this.player.kills = (this.player.kills || 0) + 1;
-        this.player.level = data.killerLevel || (this.player.level + 1);
+        this.player.level = Math.min(5, data.killerLevel || (this.player.level + 1));
         this.player.maxHp = data.killerMaxHp || (100 + (this.player.level - 1) * 15);
         this.player.hp = data.killerHp || Math.min(this.player.maxHp, this.player.hp + 40);
         this.audio.playLevelUp();
@@ -440,6 +473,10 @@ class DogfightGame {
         this.player.spawnProtectionUntil = performance.now() + 3000;
         this.player.hasDamageBoost = false;
         this.player.damageBoostUntil = 0;
+        this.player.magAmmo = 50;
+        this.player.reserveAmmo = 150;
+        this.isReloading = false;
+        this.reloadTimeRemaining = 0.0;
         this.player.x = data.x;
         this.player.y = data.y;
         this.player.alt = data.alt;
@@ -492,31 +529,72 @@ class DogfightGame {
     };
   }
 
+  triggerReload() {
+    if (this.isReloading) return;
+    if (this.player.magAmmo >= this.player.maxMag) return; // Magazine already full
+    if (this.player.reserveAmmo <= 0) {
+      this.audio.playEmptyClick();
+      return;
+    }
+    this.isReloading = true;
+    this.reloadTimeRemaining = this.reloadDuration; // 5.0 seconds reload!
+    this.audio.playReloadStart();
+  }
+
   fireWeapon() {
     const now = performance.now();
     if (this.player.isDead || now - this.lastFireTime < this.fireRateMs) return;
+
+    // 1. If currently reloading, cannot shoot (5 second reload lock)
+    if (this.isReloading) {
+      if (now - this.lastFireTime > 250) {
+        this.audio.playEmptyClick();
+        this.lastFireTime = now;
+      }
+      return;
+    }
+
+    // 2. If out of ammo in magazine, cannot shoot -> trigger reload
+    if (this.player.magAmmo <= 0) {
+      if (now - this.lastFireTime > 250) {
+        this.audio.playEmptyClick();
+        this.lastFireTime = now;
+      }
+      if (this.player.reserveAmmo > 0) {
+        this.triggerReload();
+      }
+      return;
+    }
+
     this.lastFireTime = now;
+    // Consume 1 round of ammo
+    this.player.magAmmo -= 1;
 
     this.audio.playCannonFire();
     this.renderer.triggerShake(45, 2.0);
     this.network.sendFire();
 
+    // If magazine just emptied and we have reserve ammo, auto initiate 5s reload!
+    if (this.player.magAmmo <= 0 && this.player.reserveAmmo > 0) {
+      this.triggerReload();
+    }
+
     let hitTarget = null;
     let hitScreenX = 480;
     let hitScreenY = 270;
 
-    // Case 1: Locked target engagement (target strictly within <= 200m) - Guaranteed Auto-Aim Hit!
+    // Case 1: Locked target engagement (strictly within <= 100m) - Guaranteed Auto-Aim Hit!
     if (
       this.lockedTarget &&
       !this.lockedTarget.isDead &&
       !this.lockedTarget.hasSpawnProtection &&
-      this.lockedTarget.dist <= 200
+      this.lockedTarget.dist <= 100
     ) {
       hitTarget = this.lockedTarget;
       hitScreenX = this.lockedTarget.screenX !== undefined ? this.lockedTarget.screenX : 480;
       hitScreenY = this.lockedTarget.screenY !== undefined ? this.lockedTarget.screenY : 270;
     } else {
-      // Case 2: Manual boresight aiming (< 500m) with Generous Bullet Magnetism & Lead Assist
+      // Case 2: Manual boresight & spray firing (> 100m up to 500m) - "ยิงสาด ถ้าโดนก็ได้ ไม่ได้ล็อค"
       const hRad = (this.player.heading * Math.PI) / 180;
       const pRad = ((this.player.pitch || 0) * Math.PI) / 180;
       const rRad = ((this.player.roll || 0) * Math.PI) / 180;
@@ -541,7 +619,7 @@ class DogfightGame {
 
         const dx = p.x - this.player.x;
         const dy = p.y - this.player.y;
-        const dz = (p.alt || 50) - (this.player.alt || 50); // 1:1 metric scale matching renderer
+        const dz = (p.alt || 50) - (this.player.alt || 50);
         const dist = Math.hypot(dx, dy);
 
         // Effective gun range is strictly < 500 meters
@@ -561,16 +639,10 @@ class DogfightGame {
 
         const distToCrosshair = Math.hypot(480 - sx, 270 - sy);
 
-        // Generous Hit Cone: 110px up to 180px for high hit forgiveness!
-        const hitRadius = Math.max(110, 180 * (1 - dist / 600));
+        // Boresight bullet spray cone (> 100m manual aiming)
+        const hitRadius = Math.max(50, 90 * (1 - dist / 550));
 
-        // Also check if aiming near predictive lead point
-        let distToLead = Infinity;
-        if (this.leadPoint) {
-          distToLead = Math.hypot(this.leadPoint.x - 480, this.leadPoint.y - 270);
-        }
-
-        const isHit = distToCrosshair <= hitRadius || distToLead <= 110;
+        const isHit = distToCrosshair <= hitRadius;
         if (isHit && distToCrosshair < bestScore) {
           bestScore = distToCrosshair;
           hitTarget = p;
@@ -581,16 +653,20 @@ class DogfightGame {
     }
 
     if (hitTarget) {
-      this.renderer.addTracer(hitScreenX, hitScreenY);
+      // Direct tracer hit with subtle machine gun spread
+      const hitScatter = 8;
+      this.renderer.addTracer(hitScreenX + (Math.random() - 0.5) * hitScatter, hitScreenY + (Math.random() - 0.5) * hitScatter);
       this.renderer.triggerHitMarker(160);
       this.audio.playHitTarget();
       this.renderer.addExplosion(hitScreenX, hitScreenY, 0.75);
       this.renderer.triggerFlash(70, 'rgba(255, 176, 46, 0.35)');
-      const dmg = this.player.hasDamageBoost ? 7.2 : 3.6; // 20% cannon damage (was 18 / 36), allowing evasion & dogfight escapes
+      const dmg = this.player.hasDamageBoost ? 7.2 : 3.6; // 20% cannon damage, allowing evasion & dogfight escapes
       this.network.sendHit(hitTarget.id, dmg);
     } else {
-      const sprayX = 480 + (Math.random() - 0.5) * 16;
-      const sprayY = 270 + (Math.random() - 0.5) * 16;
+      // Manual spray firing tracers ("ยิงสาด")
+      const spraySpread = 38;
+      const sprayX = 480 + (Math.random() - 0.5) * spraySpread;
+      const sprayY = 270 + (Math.random() - 0.5) * spraySpread;
       this.renderer.addTracer(sprayX, sprayY);
     }
   }
@@ -661,9 +737,10 @@ class DogfightGame {
     const banner = document.createElement('div');
     banner.className = 'kill-splash-banner';
     const rankTitle = this.getRankTitle(newLevel);
+    const lvlText = newLevel >= 5 ? `⭐ LV.5 ${rankTitle}` : `⭐ LEVEL UP! [LV.${newLevel} ${rankTitle}]`;
     banner.innerHTML = `
       <div style="font-size:17px; color:#38bdf8; font-weight:bold;">💥 KILL CONFIRMED • ${victimName}</div>
-      <div style="font-size:13px; color:#10b981; margin-top:4px;">💚 REPAIR +${hpGain} HP • ⭐ LEVEL UP! [LV.${newLevel} ${rankTitle}]</div>
+      <div style="font-size:13px; color:#10b981; margin-top:4px;">💚 REPAIR +${hpGain} HP • ${lvlText}</div>
     `;
     document.body.appendChild(banner);
     setTimeout(() => banner.remove(), 2600);
@@ -685,8 +762,7 @@ class DogfightGame {
     if (lvl === 2) return 'FIGHTER';
     if (lvl === 3) return 'VETERAN';
     if (lvl === 4) return 'ACE';
-    if (lvl === 5) return 'MASTER ACE';
-    return 'TOP GUN';
+    return 'MASTER ACE [MAX]';
   }
 
   addKillFeedEntry(killer, victim) {
@@ -773,6 +849,32 @@ class DogfightGame {
         this.dom.hudDmgBadge.style.display = 'none';
       }
     }
+
+    // Ammo & Reload Status Update
+    if (this.dom.hudMagAmmo && this.dom.hudResAmmo) {
+      this.dom.hudMagAmmo.textContent = this.player.magAmmo;
+      this.dom.hudResAmmo.textContent = this.player.reserveAmmo;
+    }
+    if (this.dom.hudReloadStatus) {
+      if (this.isReloading) {
+        this.dom.hudReloadStatus.style.display = 'inline-block';
+        this.dom.hudReloadStatus.textContent = `🔄 RELOADING (${this.reloadTimeRemaining.toFixed(1)}s)`;
+      } else if (this.player.magAmmo <= 0 && this.player.reserveAmmo <= 0) {
+        this.dom.hudReloadStatus.style.display = 'inline-block';
+        this.dom.hudReloadStatus.textContent = `⚠️ NO AMMO! COLLECT CRATES`;
+      } else {
+        this.dom.hudReloadStatus.style.display = 'none';
+      }
+    }
+    if (this.dom.hudAmmoText) {
+      if (this.player.magAmmo <= 0) {
+        this.dom.hudAmmoText.className = 'ammo-empty';
+      } else if (this.player.magAmmo <= 15) {
+        this.dom.hudAmmoText.className = 'ammo-low';
+      } else {
+        this.dom.hudAmmoText.className = 'ammo-good';
+      }
+    }
   }
 
   renderScoreboard(show) {
@@ -840,42 +942,55 @@ class DogfightGame {
           this.fireWeapon();
         }
 
+        // Process Reload Countdown (5.0 seconds reload)
+        if (this.isReloading) {
+          this.reloadTimeRemaining = Math.max(0, this.reloadTimeRemaining - dt);
+          if (this.reloadTimeRemaining <= 0) {
+            this.isReloading = false;
+            const needed = this.player.maxMag - this.player.magAmmo;
+            const take = Math.min(needed, this.player.reserveAmmo);
+            this.player.magAmmo += take;
+            this.player.reserveAmmo -= take;
+            this.audio.playReloadComplete();
+          }
+        }
+
         // Flight Physics Update:
-        // Authentic flight controls:
+        // Authentic flight controls with enhanced agility:
         // S / Stick Back = +Pitch (Climb / 360° Loop)
         // W / Stick Forward = -Pitch (Dive / Invert)
         // D / Stick Right = +Roll (Bank Right)
         // A / Stick Left = -Roll (Bank Left)
-        const controlSpeed = 48; // deg/sec (full 360° loop takes ~7.5s)
+        const controlSpeed = 80; // deg/sec (agile snappy response)
         this.player.pitch = (this.player.pitch + input.pitch * controlSpeed * dt + 360) % 360;
-        this.player.roll = Math.max(-60, Math.min(60, this.player.roll + input.roll * controlSpeed * dt));
+        this.player.roll = Math.max(-75, Math.min(75, this.player.roll + input.roll * controlSpeed * dt));
 
-        // Banking turns heading (coordinated turn dynamics: ~55 deg/s at 20° bank)
-        const turnRate = (this.player.roll / 20) * 55;
+        // Banking turns heading (coordinated turn dynamics: ~85 deg/s at 20° bank)
+        const turnRate = (this.player.roll / 20) * 85;
         this.player.heading = (this.player.heading + turnRate * dt + 360) % 360;
 
-        // Airspeed energy dynamics ("เชิดเครื่องขึ้นความเร็วลด กดความเร็วเพิ่ม"):
+        // Airspeed energy dynamics up to 300 KNOTS ("ความเร็วให้แม็กที่ 300 knott"):
         const pitchRad = (this.player.pitch * Math.PI) / 180;
         const sinPitch = Math.sin(pitchRad);
         const cosPitch = Math.cos(pitchRad);
 
-        // Base throttle speed (approx 66 to 133 kts)
-        const baseThrottleSpeed = 95 * input.throttle;
+        // Base throttle speed (throttle 0.65 to 1.55 gives base speeds ~125 to 302 kts)
+        const baseThrottleSpeed = 195 * input.throttle;
 
-        // Climbing (sinPitch > 0): bleeds speed down by up to 42 kts
-        // Diving (sinPitch < 0): accelerates speed up by up to 58 kts
-        const gravityBias = -sinPitch * (sinPitch > 0 ? 42.0 : 58.0);
-        const dynamicTargetSpeed = Math.max(46, Math.min(165, baseThrottleSpeed + gravityBias));
+        // Climbing (sinPitch > 0): bleeds speed down by up to 45 kts
+        // Diving (sinPitch < 0): accelerates speed up by up to 65 kts
+        const gravityBias = -sinPitch * (sinPitch > 0 ? 45.0 : 65.0);
+        const dynamicTargetSpeed = Math.max(65, Math.min(305, baseThrottleSpeed + gravityBias));
 
-        const accelFactor = sinPitch < -0.2 ? 4.5 : 3.0;
+        const accelFactor = sinPitch < -0.2 ? 6.5 : 4.5;
         this.player.speed += (dynamicTargetSpeed - this.player.speed) * accelFactor * dt;
-        this.player.speed = Math.max(45, Math.min(165, this.player.speed));
+        this.player.speed = Math.max(60, Math.min(300, this.player.speed)); // MAX 300 KNOTS!
         this.audio.updateEngineRPM(this.player.speed);
 
         // Altitude physics: climb rate proportional to sin(pitchRad)
-        const speedMPS = this.player.speed * 0.45;
-        const vertSpeedMPS = sinPitch * speedMPS * 0.38;
-        this.player.alt = Math.max(5, Math.min(95, this.player.alt + vertSpeedMPS * dt));
+        const speedMPS = this.player.speed * 0.52;
+        const vertSpeedMPS = sinPitch * speedMPS * 0.60;
+        this.player.alt = Math.max(8, Math.min(220, this.player.alt + vertSpeedMPS * dt)); // Expanded 220m ceiling!
 
         // World displacement
         const horizSpeedMPS = cosPitch * speedMPS;
@@ -954,29 +1069,29 @@ class DogfightGame {
         }
       }
 
-      // Target Lock-On Detection: Strictly within <= 200 meters with Sticky Lock!
+      // Target Lock-On Detection: Strictly within <= 100 meters with Sticky Lock!
       let bestTarget = null;
-      let minCrosshairDist = 180; // 180px acquisition zone
+      let minCrosshairDist = 120; // 120px acquisition zone matching compact lock box
 
-      // 1. Sticky Lock: Retain currently locked target if still in front view and within <= 200m
+      // 1. Sticky Lock: Retain currently locked target if still in front view and within <= 100m
       if (
         this.lockedTarget &&
         !this.lockedTarget.isDead &&
         !this.lockedTarget.hasSpawnProtection &&
-        this.lockedTarget.dist <= 200 &&
+        this.lockedTarget.dist <= 100 &&
         this.lockedTarget.inFront
       ) {
         const dCurrent = Math.hypot(480 - (this.lockedTarget.screenX || 480), 270 - (this.lockedTarget.screenY || 270));
-        if (dCurrent < 320) {
+        if (dCurrent < 220) {
           bestTarget = this.lockedTarget;
         }
       }
 
-      // 2. If no target retained, acquire closest target in front within 180px crosshair radius and <= 200m
+      // 2. If no target retained, acquire closest target in front within 120px crosshair radius and <= 100m
       if (!bestTarget) {
         for (let p of otherList) {
           p.isLocked = false;
-          if (!p.isDead && !p.hasSpawnProtection && p.inFront && p.dist <= 200) {
+          if (!p.isDead && !p.hasSpawnProtection && p.inFront && p.dist <= 100) {
             const dCenter = Math.hypot(480 - p.screenX, 270 - p.screenY);
             if (dCenter < minCrosshairDist) {
               minCrosshairDist = dCenter;
@@ -1062,6 +1177,10 @@ class DogfightGame {
             isFiring: input.isFiring,
             lockedTarget: this.lockedTarget,
             leadPoint: this.leadPoint,
+            magAmmo: this.player.magAmmo,
+            reserveAmmo: this.player.reserveAmmo,
+            isReloading: this.isReloading,
+            reloadTimeRem: this.reloadTimeRemaining,
             distFromCenter: this.distFromCenter,
             boundaryState: this.boundaryState,
             boundaryTimeRem: this.boundaryTimeRemaining,

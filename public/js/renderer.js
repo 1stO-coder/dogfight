@@ -201,7 +201,7 @@ class DogfightRenderer {
     this.drawExplosions(ctx, dt);
 
     // 8. Fixed Center Reticle & Lead Gunsight
-    this.drawCockpitReticle(ctx, state.lockedTarget, state.leadPoint, now, state.pitch);
+    this.drawCockpitReticle(ctx, state.lockedTarget, state.leadPoint, now, state.pitch, state.magAmmo, state.reserveAmmo, state.isReloading, state.reloadTimeRem);
 
     // 9. Flight Instruments (Airspeed Tape, Altimeter Tape, Compass Ribbon)
     this.drawAirspeedTape(ctx, state.speed || 95, state.throttle || 1.0);
@@ -923,13 +923,15 @@ class DogfightRenderer {
       ctx.closePath();
       ctx.fill();
 
-      // Nametag & Distance label
+      // Nametag & Distance & Altitude label
       ctx.rotate(-screenAngle);
       ctx.fillStyle = col;
       ctx.font = 'bold 10px monospace';
       ctx.textAlign = 'center';
       const labelY = (screenAngle > -Math.PI / 2 && screenAngle < Math.PI / 2) ? 18 : -14;
-      ctx.fillText(`${p.callsign} [${dist}m]`, 0, labelY);
+      const altDiff = Math.round((p.alt || 50) - (myPlane.alt || 50));
+      const altTag = altDiff > 8 ? ' ▲HIGH' : (altDiff < -8 ? ' ▼LOW' : '');
+      ctx.fillText(`${p.callsign} [${dist}m${altTag}]`, 0, labelY);
 
       ctx.restore();
     }
@@ -983,10 +985,10 @@ class DogfightRenderer {
         continue;
       }
 
-      // Delta vector in world coords
+      // Delta vector in world coords (amplified vertical scale for distinct altitude visualization)
       const dx = p.x - myPlane.x;
       const dy = p.y - myPlane.y;
-      const dz = (p.alt || 50) - (myPlane.alt || 50); // 1:1 metric scale
+      const dz = ((p.alt || 50) - (myPlane.alt || 50)) * 1.5;
 
       // 3D body reference frame
       const relZ = dx * Fx + dy * Fy + dz * Fz; // Forward (+ = ahead)
@@ -1109,7 +1111,24 @@ class DogfightRenderer {
 
         ctx.fillStyle = inGunRange ? '#10b981' : '#64748b';
         ctx.font = '10px monospace';
-        ctx.fillText(inGunRange ? `${Math.round(dist)}m [IN RANGE]` : `${Math.round(dist)}m`, sx, sy + 25);
+        ctx.fillText(inGunRange ? `${Math.round(dist)}m [IN RANGE]` : `${Math.round(dist)}m`, sx, sy + 22);
+
+        // Explicit Altitude & Vertical Difference Badge
+        const altDiffA = Math.round((p.alt || 50) - (myPlane.alt || 50));
+        let altTagA = `${Math.round(p.alt || 50)}m`;
+        let altColA = '#94a3b8';
+        if (altDiffA > 5) {
+          altTagA += ` [▲+${altDiffA}m HIGH]`;
+          altColA = '#38bdf8';
+        } else if (altDiffA < -5) {
+          altTagA += ` [▼${altDiffA}m LOW]`;
+          altColA = '#f59e0b';
+        } else {
+          altTagA += ` [LEVEL]`;
+        }
+        ctx.fillStyle = altColA;
+        ctx.font = 'bold 9px monospace';
+        ctx.fillText(`ALT ${altTagA}`, sx, sy + 34);
 
         ctx.restore();
         continue;
@@ -1386,16 +1405,33 @@ class DogfightRenderer {
         ctx.stroke();
       }
 
+      // Relative altitude difference tag
+      const altDiffB = Math.round((p.alt || 50) - (myPlane.alt || 50));
+      let altTagB = `${Math.round(p.alt || 50)}m`;
+      let altColB = '#94a3b8';
+      if (altDiffB > 5) {
+        altTagB += ` [▲+${altDiffB}m HIGH]`;
+        altColB = '#38bdf8';
+      } else if (altDiffB < -5) {
+        altTagB += ` [▼${altDiffB}m LOW]`;
+        altColB = '#f59e0b';
+      } else {
+        altTagB += ` [LEVEL]`;
+      }
+      ctx.fillStyle = altColB;
+      ctx.font = 'bold 9px monospace';
+      ctx.fillText(`ALT ${altTagB}`, 0, 32);
+
       // Distance tag
       ctx.fillStyle = '#38bdf8';
       ctx.font = '10px monospace';
-      ctx.fillText(`${Math.round(dist)}m`, 0, 42);
+      ctx.fillText(`${Math.round(dist)}m`, 0, 44);
 
       ctx.restore();
     }
   }
 
-  drawCockpitReticle(ctx, lockedTarget, leadPoint, now, pitch) {
+  drawCockpitReticle(ctx, lockedTarget, leadPoint, now, pitch, magAmmo = 50, reserveAmmo = 150, isReloading = false, reloadTimeRem = 0) {
     const cx = 480;
     const cy = 270;
     ctx.save();
@@ -1452,11 +1488,11 @@ class DogfightRenderer {
       ctx.shadowBlur = 0;
     }
 
-    // 2. Lock-on Box & Indicator (Active when enemy is within <= 200m)
+    // 2. Lock-on Box & Indicator (Active when enemy is within <= 100m, compact size)
     if (lockedTarget && lockedTarget.screenX !== undefined) {
       const tx = lockedTarget.screenX;
       const ty = lockedTarget.screenY;
-      const pulseSize = 36 + Math.sin(now * 0.02) * 4;
+      const pulseSize = 16 + Math.sin(now * 0.03) * 2;
 
       // Connecting lead vector line from boresight to target
       ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)';
@@ -1467,12 +1503,12 @@ class DogfightRenderer {
       ctx.stroke();
 
       ctx.strokeStyle = '#ef4444';
-      ctx.lineWidth = 2.2;
+      ctx.lineWidth = 2.0;
       ctx.shadowColor = '#ef4444';
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 8;
 
-      // Lock corners [ ]
-      const cLen = 10;
+      // Compact Lock corners [ ]
+      const cLen = 5;
       ctx.beginPath();
       // Top-Left
       ctx.moveTo(tx - pulseSize, ty - pulseSize + cLen);
@@ -1494,32 +1530,63 @@ class DogfightRenderer {
 
       // LOCK Text with Target Distance and Auto-Aim Badge
       ctx.fillStyle = '#ef4444';
-      ctx.font = 'bold 11px monospace';
+      ctx.font = 'bold 10px monospace';
       ctx.textAlign = 'center';
       const targetDistStr = lockedTarget.dist ? `${Math.round(lockedTarget.dist)}m` : 'LOCK';
-      ctx.fillText(`LOCKED • ${lockedTarget.callsign} [${targetDistStr}]`, tx, ty - pulseSize - 8);
-      ctx.font = 'bold 9px monospace';
-      ctx.fillText(`AUTO-AIM ENGAGED (100% HIT)`, tx, ty + pulseSize + 16);
+      ctx.fillText(`LOCKED • ${lockedTarget.callsign} [${targetDistStr}]`, tx, ty - pulseSize - 7);
+      ctx.font = 'bold 8px monospace';
+      ctx.fillText(`AUTO-AIM ≤100M ENGAGED`, tx, ty + pulseSize + 13);
     }
 
     // 3. Lead Reticle (predictive aim assist)
-    if (leadPoint) {
+    if (leadPoint && isLocked) {
       ctx.strokeStyle = '#10b981';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(leadPoint.x, leadPoint.y, 8, 0, Math.PI * 2);
+      ctx.arc(leadPoint.x, leadPoint.y, 7, 0, Math.PI * 2);
       ctx.stroke();
       ctx.fillStyle = '#10b981';
-      ctx.font = '9px monospace';
+      ctx.font = '8px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('LEAD', leadPoint.x, leadPoint.y + 18);
+      ctx.fillText('LEAD', leadPoint.x, leadPoint.y + 16);
     }
 
-    // Range Label: Lock at <= 200m, Guns hit < 500m
+    // Range Label: Lock at <= 100m, Spray fire > 100m
     ctx.fillStyle = isLocked ? '#ef4444' : 'rgba(56, 189, 248, 0.75)';
     ctx.font = 'bold 9px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(isLocked ? 'TARGET ACQUIRED • AUTO-AIM ACTIVE (LOCK ≤200M)' : 'RADAR LOCK ≤200M • AUTO-LEAD READY', cx, cy + 42);
+    ctx.fillText(isLocked ? 'TARGET ACQUIRED • LOCK ≤100M (AUTO-AIM)' : 'RADAR LOCK ≤100M • SPRAY FIRE >100M', cx, cy + 42);
+
+    // 3.5. Cockpit HUD Canvas Ammo & Reload Readout
+    ctx.textAlign = 'center';
+    if (isReloading) {
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = 'bold 11px monospace';
+      const secRem = Math.max(0, reloadTimeRem).toFixed(1);
+      ctx.fillText(`🔄 RELOADING: ${secRem}s`, cx, cy + 60);
+
+      // Mini reload progress bar
+      const barW = 84;
+      const barH = 4;
+      const pct = Math.min(1, Math.max(0, (5.0 - reloadTimeRem) / 5.0));
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillRect(cx - barW / 2, cy + 66, barW, barH);
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(cx - barW / 2, cy + 66, barW * pct, barH);
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cx - barW / 2, cy + 66, barW, barH);
+    } else {
+      ctx.font = 'bold 11px monospace';
+      if (magAmmo === 0) {
+        ctx.fillStyle = '#ef4444';
+        ctx.fillText(`⚠️ EMPTY (PRESS 'R' TO RELOAD)`, cx, cy + 60);
+      } else {
+        const ammoColor = magAmmo <= 15 ? '#ef4444' : '#10b981';
+        ctx.fillStyle = ammoColor;
+        ctx.fillText(`AMMO: ${magAmmo}/50  •  RES: ${reserveAmmo}`, cx, cy + 60);
+      }
+    }
 
     // Pitch Attitude Readout (displays loop angle / inverted status)
     const normPitch = (((pitch || 0) % 360) + 360) % 360;
@@ -1740,6 +1807,10 @@ class DogfightRenderer {
             ctx.fillStyle = '#38bdf8';
             ctx.font = 'bold 11px monospace';
             ctx.fillText('🛡', pit.x, pit.y);
+          } else if (it.type === 'ammo') {
+            ctx.fillStyle = '#eab308';
+            ctx.font = 'bold 11px monospace';
+            ctx.fillText('📦', pit.x, pit.y);
           }
         }
       }
@@ -1791,11 +1862,11 @@ class DogfightRenderer {
         const pAlt = Math.round(p.alt || 50);
         const myAlt = Math.round(myPlane.alt || 50);
         const dAlt = pAlt - myAlt;
-        const altArrow = dAlt > 2 ? '▲' : (dAlt < -2 ? '▼' : '=');
-        ctx.fillStyle = p.isLocked ? '#ef4444' : '#e0f2fe';
+        const altArrow = dAlt > 3 ? `▲+${dAlt}m` : (dAlt < -3 ? `▼${dAlt}m` : `${pAlt}m`);
+        ctx.fillStyle = p.isLocked ? '#ef4444' : (dAlt > 3 ? '#38bdf8' : (dAlt < -3 ? '#f59e0b' : '#e0f2fe'));
         ctx.font = 'bold 8px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(`${pAlt}m ${altArrow}`, pp.x, pp.y - 7);
+        ctx.fillText(altArrow, pp.x, pp.y - 7);
       }
     }
 
@@ -1876,8 +1947,8 @@ class DogfightRenderer {
     ctx.fillText('KTS', bx + bw / 2, 242);
 
     // Throttle % Power
-    const pct = Math.round((throttle / 1.45) * 100);
-    ctx.fillStyle = throttle > 1.2 ? '#f97316' : '#10b981';
+    const pct = Math.min(100, Math.max(0, Math.round(((throttle - 0.65) / (1.55 - 0.65)) * 100)));
+    ctx.fillStyle = throttle > 1.35 ? '#f97316' : '#10b981';
     ctx.font = 'bold 10px monospace';
     ctx.fillText(`THR ${pct}%`, bx + bw / 2, 395);
 
@@ -1904,13 +1975,16 @@ class DogfightRenderer {
     ctx.strokeRect(bx - 5, 252, bw + 10, 36);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 18px monospace';
+    ctx.font = 'bold 16px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(Math.round(altitude * 100), bx + bw / 2, 276);
+    ctx.fillText(`${Math.round(altitude)}m`, bx + bw / 2, 273);
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(`${Math.round(altitude * 3.28)}ft`, bx + bw / 2, 287);
 
     ctx.fillStyle = '#38bdf8';
     ctx.font = '9px monospace';
-    ctx.fillText('ALT FT', bx + bw / 2, 242);
+    ctx.fillText('ALT (M / FT)', bx + bw / 2, 242);
 
     ctx.restore();
   }
@@ -1956,7 +2030,7 @@ class DogfightRenderer {
     for (let it of items) {
       const dx = it.x - myPlane.x;
       const dy = it.y - myPlane.y;
-      const dz = (it.alt || 50) - (myPlane.alt || 50); // 1:1 metric scale
+      const dz = ((it.alt || 50) - (myPlane.alt || 50)) * 1.5; // Amplified vertical scale for clear altitude distinction
 
       const relZ = dx * Fx + dy * Fy + dz * Fz;
       const relX = dx * Rx + dy * Ry + dz * Rz;
@@ -1991,6 +2065,11 @@ class DogfightRenderer {
         colGlow = 'rgba(56, 189, 248, 0.35)';
         icon = '🛡️';
         title = 'ENERGY SHIELD';
+      } else if (it.type === 'ammo') {
+        colMain = '#eab308';
+        colGlow = 'rgba(234, 179, 8, 0.35)';
+        icon = '📦';
+        title = 'AMMO CRATE +100';
       }
 
       // Vertical beacon beam

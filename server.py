@@ -124,6 +124,8 @@ class Player:
         self.shield_until = 0.0  # Temporary armor expiry (2 minutes)
         self.spawn_protection_until = time.time() + 3.0  # 3s spawn invulnerability
         self.damage_boost_until = 0.0  # 2x cannon damage buff (lasts 120s = 2 min)
+        self.mag_ammo = 50
+        self.reserve_ammo = 150
         self.is_dead = False
         self.respawn_at = 0.0
         self.kills = 0
@@ -157,6 +159,8 @@ class Player:
             "shieldRem": max(0.0, round(self.shield_until - now, 1)) if has_active_armor else 0.0,
             "hasDamageBoost": now < self.damage_boost_until,
             "damageBoostRem": max(0.0, round(self.damage_boost_until - now, 1)),
+            "magAmmo": self.mag_ammo,
+            "reserveAmmo": self.reserve_ammo,
             "kills": self.kills,
             "deaths": self.deaths,
             "score": self.score,
@@ -175,13 +179,13 @@ class Room:
         self.spawn_initial_items()
 
     def spawn_initial_items(self):
-        types = ["medkit", "medkit", "damage_boost", "damage_boost", "shield", "shield"]
+        types = ["medkit", "medkit", "damage_boost", "shield", "ammo", "ammo", "ammo"]
         for t in types:
             self.spawn_random_item(t)
 
     def spawn_random_item(self, item_type: str = None) -> Item:
         if not item_type:
-            item_type = random.choice(["medkit", "damage_boost", "shield"])
+            item_type = random.choice(["medkit", "damage_boost", "shield", "ammo", "ammo"])
 
         for _ in range(25):
             angle = random.random() * 2 * math.pi
@@ -189,8 +193,8 @@ class Room:
             x = dist * math.cos(angle)
             y = dist * math.sin(angle)
             ground_h = get_terrain_height(x, y)
-            alt = max(ground_h + 20.0, 35.0 + random.random() * 45.0)
-            if alt <= 90.0:
+            alt = max(ground_h + 20.0, 35.0 + random.random() * 85.0)
+            if alt <= 150.0:
                 break
 
         item_id = f"item_{self.next_item_id}"
@@ -218,6 +222,8 @@ class Room:
                 elif item.type == "shield":
                     player.shield_hp = min(40, player.shield_hp + 20)  # +20 temporary HP shield
                     player.shield_until = now + 120.0  # 2 minutes duration
+                elif item.type == "ammo":
+                    player.reserve_ammo = min(400, player.reserve_ammo + 100)
                 return item
         return None
 
@@ -432,6 +438,8 @@ class GameServer:
                                     "collectorShieldHp": player.shield_hp,
                                     "collectorShieldRem": max(0.0, round(player.shield_until - now, 1)),
                                     "collectorDamageBoostRem": max(0.0, round(player.damage_boost_until - now, 1)),
+                                    "collectorMagAmmo": player.mag_ammo,
+                                    "collectorReserveAmmo": player.reserve_ammo,
                                 }
                             )
 
@@ -493,6 +501,8 @@ class GameServer:
                         player.shield_hp = 0
                         player.shield_until = 0.0
                         player.damage_boost_until = 0.0
+                        player.mag_ammo = 50
+                        player.reserve_ammo = 150
                         player.respawn_at = 0.0
                         player.spawn_protection_until = now + 3.0
                         x, y, alt, heading = get_safe_spawn_point()
@@ -604,10 +614,10 @@ class GameServer:
                                 target.shield_until = 0.0
                                 target.damage_boost_until = 0.0
 
-                                # Killer rewards: kills, score, level up, max HP upgrade, and HP heal reward!
+                                # Killer rewards: kills, score, level up (capped at Level 5!), max HP upgrade, and HP heal reward!
                                 player.kills += 1
                                 player.score += 100
-                                player.level += 1
+                                player.level = min(5, player.level + 1)
                                 player.max_hp = 100 + (player.level - 1) * 15
                                 heal_reward = 40
                                 player.hp = min(player.max_hp, player.hp + heal_reward)
@@ -686,6 +696,8 @@ class GameServer:
                         p.max_hp = 100
                         p.hp = 100
                         p.damage_boost_until = 0.0
+                        p.mag_ammo = 50
+                        p.reserve_ammo = 150
                         p.respawn_at = 0.0
                         p.shield_hp = 0
                         p.shield_until = 0.0

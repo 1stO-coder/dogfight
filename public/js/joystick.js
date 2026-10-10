@@ -242,11 +242,11 @@ class DogfightJoystickManager {
     const pitch = this.invertPitch ? -rawPitch : rawPitch;
     const roll = this.invertRoll ? -rawRoll : rawRoll;
 
-    // Smooth throttle update (0.70 to 1.45)
+    // Smooth throttle update (0.65 to 1.55 for up to 300 Knots)
     if (throttleDelta > 0) {
-      this.throttle = Math.min(1.45, this.throttle + 0.35 * 0.016);
+      this.throttle = Math.min(1.55, this.throttle + 0.45 * 0.016);
     } else if (throttleDelta < 0) {
-      this.throttle = Math.max(0.70, this.throttle - 0.35 * 0.016);
+      this.throttle = Math.max(0.65, this.throttle - 0.45 * 0.016);
     }
 
     if (triggerPressed && this.callbacks.onFire) {

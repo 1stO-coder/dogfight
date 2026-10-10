@@ -294,6 +294,20 @@ class DogfightAudioEngine {
       gain.connect(this.ctx.destination);
       osc.start(now);
       osc.stop(now + 0.5);
+    } else if (type === 'ammo') {
+      // Metallic mechanical ammo reload chime
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(520, now);
+      osc.frequency.setValueAtTime(780, now + 0.08);
+      osc.frequency.setValueAtTime(1040, now + 0.16);
+      gain.gain.setValueAtTime(0.25, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.35);
     } else {
       // Medkit: Warm heal chime
       const osc = this.ctx.createOscillator();
@@ -308,6 +322,59 @@ class DogfightAudioEngine {
       osc.start(now);
       osc.stop(now + 0.4);
     }
+  }
+
+  playReloadStart() {
+    if (!this.ctx || this.isMuted) return;
+    this.resume();
+    const now = this.ctx.currentTime;
+    // Mechanical magazine unlatch & bolt pull
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(220, now);
+    osc.frequency.exponentialRampToValueAtTime(140, now + 0.12);
+    gain.gain.setValueAtTime(0.15, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.15);
+  }
+
+  playReloadComplete() {
+    if (!this.ctx || this.isMuted) return;
+    this.resume();
+    const now = this.ctx.currentTime;
+    // Crisp bolt release click
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(480, now);
+    osc.frequency.setValueAtTime(720, now + 0.06);
+    gain.gain.setValueAtTime(0.22, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  }
+
+  playEmptyClick() {
+    if (!this.ctx || this.isMuted) return;
+    this.resume();
+    const now = this.ctx.currentTime;
+    // Dry fire hammer click
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(800, now);
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.04);
   }
 
   playHealRepair() {
